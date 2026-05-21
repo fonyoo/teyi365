@@ -1,0 +1,1469 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import rehypeHighlight from "rehype-highlight";
+import rehypeSanitize from "rehype-sanitize";
+import remarkGfm from "remark-gfm";
+import {
+  ArrowLeft,
+  MessageSquareText,
+  Eye,
+  EyeOff,
+  FilePenLine,
+  Lock,
+  LogIn,
+  LogOut,
+  Copy,
+  Check,
+  Plus,
+  Search,
+  TagIcon,
+  Tag,
+  Trash2,
+  X
+} from "lucide-react";
+import {
+  approveMessage,
+  createArticle,
+  createMessage,
+  deleteArticle,
+  deleteMessage,
+  getArticle,
+  getMessageCaptcha,
+  getMe,
+  listArticles,
+  listMessages,
+  listTags,
+  login,
+  logout,
+  searchArticles,
+  updateArticle
+} from "./api";
+import type {
+  Article,
+  ArticleInput,
+  ArticleSummary,
+  GuestbookCaptcha,
+  GuestbookInput,
+  GuestbookMessage,
+  Tag as TagType,
+  Visibility
+} from "./types";
+import { articleToInput, emptyArticleInput, formatArticleTimeTitle, formatDate, sampleMarkdown } from "./utils";
+
+type View = "list" | "article" | "editor" | "guestbook";
+const firstArticlePage = 1; // Initial article list page.
+const siteTitle = "仰晨博客"; // Browser title used outside article pages.
+const guestbookPath = "/guestbook"; // Shareable path for the guestbook page.
+const searchDebounceMs = 650; // Delay before querying as the visitor types.
+const minAutoSearchLength = 2; // One-character input stays local to save Cloudflare requests.
+const guestbookCooldownKey = "guestbook:lastSentAt"; // Local storage key for client-side guest cooldown.
+const guestbookCooldownSeconds = 120; // Seconds a guest must wait before sending again.
+const defaultGuestbookDraft: GuestbookInput = {
+  nickname: "",
+  email: "",
+  content: "",
+  parentId: null,
+  captchaToken: "",
+  captchaAnswer: ""
+};
+
+function articlePath(slug: string) {
+  return `/articles/${encodeURIComponent(slug)}`;
+}
+
+function slugFromPath(pathname: string) {
+  const match = pathname.match(/^\/articles\/(.+)$/);
+  if (!match) {
+    return "";
+  }
+
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return "";
+  }
+}
+
+export function App() {
+  const [articles, setArticles] = useState<ArticleSummary[]>([]);
+  const [tags, setTags] = useState<TagType[]>([]);
+  const [tagOptions, setTagOptions] = useState<TagType[]>([]);
+  const [selectedTag, setSelectedTag] = useState("");
+  const [search, setSearch] = useState("");
+  const [appliedSearch, setAppliedSearch] = useState("");
+  const [activeArticle, setActiveArticle] = useState<Article | null>(null);
+  const [editingSlug, setEditingSlug] = useState<string | null>(null);
+  const [draft, setDraft] = useState<ArticleInput>({ ...emptyArticleInput, content: sampleMarkdown() });
+  const [view, setView] = useState<View>("list");
+  const [authenticated, setAuthenticated] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [articlePage, setArticlePage] = useState(firstArticlePage);
+  const [articleTotal, setArticleTotal] = useState(0);
+  const [allArticleTotal, setAllArticleTotal] = useState(0);
+  const [hasMoreArticles, setHasMoreArticles] = useState(false);
+  const [guestbookMessages, setGuestbookMessages] = useState<GuestbookMessage[]>([]);
+  const [guestbookDraft, setGuestbookDraft] = useState<GuestbookInput>(defaultGuestbookDraft);
+  const [guestbookCaptcha, setGuestbookCaptcha] = useState<GuestbookCaptcha | null>(null);
+  const [guestbookReplyTarget, setGuestbookReplyTarget] = useState<GuestbookMessage | null>(null);
+  const [guestbookLoading, setGuestbookLoading] = useState(false);
+  const [guestbookSubmitting, setGuestbookSubmitting] = useState(false);
+  const [guestbookCooldown, setGuestbookCooldown] = useState(0);
+  const [message, setMessage] = useState("");
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+  const articleRequestId = useRef(0);
+  const articleSearchEffectReady = useRef(false);
+  const listScrollY = useRef(0);
+
+  useEffect(() => {
+    void bootstrap();
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      void syncViewFromLocation();
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [authenticated]);
+
+  useEffect(() => {
+    document.title =
+      view === "article" && activeArticle ? `${siteTitle} - ${activeArticle.title}` : view === "guestbook" ? `${siteTitle} - 留言板` : siteTitle;
+  }, [activeArticle, view]);
+
+  useEffect(() => {
+    if (!message) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => setMessage(""), 5000);
+    return () => window.clearTimeout(timer);
+  }, [message]);
+
+  useEffect(() => {
+    if (!notice) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => setNotice(""), 3200);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  useEffect(() => {
+    if (!error) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => setError(""), 5000);
+    return () => window.clearTimeout(timer);
+  }, [error]);
+
+  const selectedTagName = useMemo(() => tags.find((tag) => tag.slug === selectedTag)?.name ?? "", [selectedTag, tags]);
+  const effectiveSearch = useMemo(() => search.trim(), [search]);
+  const canApplySearch = effectiveSearch.length === 0 || effectiveSearch.length >= minAutoSearchLength;
+
+  useEffect(() => {
+    const updateCooldown = () => {
+      setGuestbookCooldown(readGuestbookCooldown());
+    };
+
+    updateCooldown();
+    const timer = window.setInterval(updateCooldown, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (view === "guestbook") {
+      void refreshGuestbook();
+    }
+  }, [authenticated, view]);
+
+  async function bootstrap() {
+    setLoading(true);
+    try {
+      const me = await getMe();
+      setAuthenticated(me.authenticated);
+      await refreshContent();
+      await syncViewFromLocation();
+    } catch (caught) {
+      setError(asErrorMessage(caught));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function syncViewFromLocation() {
+    if (window.location.pathname === guestbookPath) {
+      setActiveArticle(null);
+      setEditingSlug(null);
+      setView("guestbook");
+      return;
+    }
+
+    const slug = slugFromPath(window.location.pathname);
+    if (!slug) {
+      setActiveArticle(null);
+      setEditingSlug(null);
+      setView("list");
+      return;
+    }
+
+    await loadArticle(slug, false);
+  }
+
+  const refreshContent = useCallback(async () => {
+    const requestId = articleRequestId.current + 1;
+    articleRequestId.current = requestId;
+    setLoading(true);
+    setLoadingMore(false);
+    try {
+      const result = await searchArticles({ page: firstArticlePage, search: appliedSearch, tag: selectedTag });
+      if (requestId !== articleRequestId.current) {
+        return;
+      }
+      const articleResult = result.articleResult;
+      setArticles(articleResult.articles);
+      setArticlePage(articleResult.page);
+      setArticleTotal(articleResult.total);
+      setAllArticleTotal(result.allArticleTotal);
+      setHasMoreArticles(articleResult.hasMore);
+      setTags(result.tags);
+      if (selectedTag && !result.tags.some((tag) => tag.slug === selectedTag)) {
+        setSelectedTag("");
+      }
+      if (!appliedSearch) {
+        setTagOptions(result.tags);
+      }
+    } catch (caught) {
+      setError(asErrorMessage(caught));
+    } finally {
+      if (requestId === articleRequestId.current) {
+        setLoading(false);
+      }
+    }
+  }, [appliedSearch, selectedTag]);
+
+  const loadMoreArticles = useCallback(async () => {
+    if (loading || loadingMore || !hasMoreArticles) {
+      return;
+    }
+
+    const nextPage = articlePage + 1; // Next page requested for infinite loading.
+    const requestId = articleRequestId.current;
+    setLoadingMore(true);
+    try {
+      const articleResult = await listArticles({ page: nextPage, search: appliedSearch, tag: selectedTag });
+      if (requestId !== articleRequestId.current) {
+        return;
+      }
+      setArticles((currentArticles) => [...currentArticles, ...articleResult.articles]);
+      setArticlePage(articleResult.page);
+      setArticleTotal(articleResult.total);
+      setHasMoreArticles(articleResult.hasMore);
+    } catch (caught) {
+      setError(asErrorMessage(caught));
+    } finally {
+      if (requestId === articleRequestId.current) {
+        setLoadingMore(false);
+      }
+    }
+  }, [appliedSearch, articlePage, hasMoreArticles, loading, loadingMore, selectedTag]);
+
+  useEffect(() => {
+    if (!canApplySearch) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setAppliedSearch(effectiveSearch);
+    }, searchDebounceMs);
+
+    return () => window.clearTimeout(timer);
+  }, [canApplySearch, effectiveSearch]);
+
+  useEffect(() => {
+    if (!articleSearchEffectReady.current) {
+      articleSearchEffectReady.current = true;
+      return;
+    }
+
+    void refreshContent();
+  }, [refreshContent]);
+
+  useEffect(() => {
+    if (view !== "list" || !hasMoreArticles || loading || loadingMore) {
+      return;
+    }
+
+    const handleScroll = () => {
+      const scrollBottom = window.innerHeight + window.scrollY; // Current viewport bottom.
+      const triggerLine = document.documentElement.scrollHeight - 360; // Distance from bottom before loading more.
+
+      if (scrollBottom >= triggerLine) {
+        void loadMoreArticles();
+      }
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    handleScroll();
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, [hasMoreArticles, loadMoreArticles, loading, loadingMore, view]);
+
+  async function refreshTagOptions() {
+    const result = await listTags();
+    setTagOptions(result.tags);
+  }
+
+  async function openArticle(slug: string) {
+    listScrollY.current = window.scrollY;
+    await loadArticle(slug, true);
+  }
+
+  /** Loads an article and moves the single-page app into article view. */
+  async function loadArticle(slug: string, pushUrl: boolean) {
+    setError("");
+    setLoading(true);
+    try {
+      const result = await getArticle(slug);
+      setActiveArticle(result.article);
+      setView("article");
+      if (pushUrl && window.location.pathname !== articlePath(result.article.slug)) {
+        window.history.pushState(null, "", articlePath(result.article.slug));
+      }
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (caught) {
+      setError(asErrorMessage(caught));
+      setLoginOpen(!authenticated);
+      if (!pushUrl) {
+        setView("list");
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function showList(options: { restoreScroll?: boolean } = {}) {
+    setActiveArticle(null);
+    setEditingSlug(null);
+    setView("list");
+    if (window.location.pathname !== "/") {
+      window.history.pushState(null, "", "/");
+    }
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: options.restoreScroll ? listScrollY.current : 0, behavior: "auto" });
+    });
+  }
+
+  /** Opens the shareable guestbook view and refreshes its current messages. */
+  async function showGuestbook(pushUrl = true) {
+    setActiveArticle(null);
+    setEditingSlug(null);
+    setView("guestbook");
+    if (pushUrl && window.location.pathname !== guestbookPath) {
+      window.history.pushState(null, "", guestbookPath);
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    await refreshGuestbook();
+  }
+
+  function newArticle() {
+    setEditingSlug(null);
+    setDraft({ ...emptyArticleInput, content: sampleMarkdown() });
+    setActiveArticle(null);
+    void refreshTagOptions();
+    setView("editor");
+    if (window.location.pathname !== "/") {
+      window.history.pushState(null, "", "/");
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function editArticle(slug: string) {
+    setError("");
+    setLoading(true);
+    try {
+      const result = await getArticle(slug);
+      setEditingSlug(slug);
+      setActiveArticle(result.article);
+      setDraft(articleToInput(result.article));
+      await refreshTagOptions();
+      setView("editor");
+      if (window.location.pathname !== articlePath(result.article.slug)) {
+        window.history.pushState(null, "", articlePath(result.article.slug));
+      }
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (caught) {
+      setError(asErrorMessage(caught));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function submitDraft(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setMessage("");
+
+    try {
+      const result = editingSlug ? await updateArticle(editingSlug, draft) : await createArticle(draft);
+      setMessage(editingSlug ? "文章已更新" : "文章已发布");
+      setActiveArticle(result.article);
+      setEditingSlug(result.article.slug);
+      setDraft(articleToInput(result.article));
+      setView("article");
+      window.history.pushState(null, "", articlePath(result.article.slug));
+      await refreshContent();
+    } catch (caught) {
+      setError(asErrorMessage(caught));
+    }
+  }
+
+  async function removeArticle(slug: string) {
+    if (!window.confirm("确定删除这篇文章吗？")) {
+      return;
+    }
+
+    setError("");
+    try {
+      await deleteArticle(slug);
+      setMessage("文章已删除");
+      setActiveArticle(null);
+      showList();
+      await refreshContent();
+    } catch (caught) {
+      setError(asErrorMessage(caught));
+    }
+  }
+
+  async function handleLogin(username: string, password: string) {
+    setError("");
+    await login(username, password);
+    setAuthenticated(true);
+    setLoginOpen(false);
+    setMessage("已登录");
+    await refreshContent();
+  }
+
+  async function handleLogout() {
+    setError("");
+    await logout();
+    setAuthenticated(false);
+    setActiveArticle(null);
+    setEditingSlug(null);
+    showList();
+    setMessage("已退出登录");
+    await refreshContent();
+  }
+
+  /** Reloads guestbook messages and prepares captcha state for the current viewer. */
+  async function refreshGuestbook() {
+    setGuestbookLoading(true);
+    try {
+      const result = await listMessages();
+      setGuestbookMessages(result.messages);
+      if (!authenticated) {
+        const captchaResult = await getMessageCaptcha();
+        setGuestbookCaptcha(captchaResult.captcha);
+        setGuestbookDraft((currentDraft) => ({ ...currentDraft, captchaToken: captchaResult.captcha.token, captchaAnswer: "" }));
+      } else {
+        setGuestbookCaptcha(null);
+        setGuestbookDraft((currentDraft) => ({ ...currentDraft, nickname: "仰晨", email: "", captchaToken: "", captchaAnswer: "" }));
+      }
+    } catch (caught) {
+      setError(asErrorMessage(caught));
+    } finally {
+      setGuestbookLoading(false);
+    }
+  }
+
+  /** Requests a fresh captcha for guests after initial load or failed submission. */
+  async function refreshGuestbookCaptcha() {
+    if (authenticated) {
+      return;
+    }
+
+    try {
+      const result = await getMessageCaptcha();
+      setGuestbookCaptcha(result.captcha);
+      setGuestbookDraft((currentDraft) => ({ ...currentDraft, captchaToken: result.captcha.token, captchaAnswer: "" }));
+    } catch (caught) {
+      setError(asErrorMessage(caught));
+    }
+  }
+
+  /** Sends a guestbook message or top-level reply from the shared form. */
+  async function submitGuestbookMessage(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setMessage("");
+
+    if (!authenticated && guestbookCooldown > 0) {
+      setError(`发送太频繁了，请 ${guestbookCooldown} 秒后再试`);
+      return;
+    }
+
+    setGuestbookSubmitting(true);
+    try {
+      const input = {
+        ...guestbookDraft,
+        nickname: authenticated ? "仰晨" : guestbookDraft.nickname,
+        parentId: guestbookReplyTarget?.id ?? null,
+        captchaToken: guestbookCaptcha?.token ?? guestbookDraft.captchaToken
+      };
+      await createMessage(input);
+      if (!authenticated) {
+        window.localStorage.setItem(guestbookCooldownKey, String(Date.now()));
+        setGuestbookCooldown(guestbookCooldownSeconds);
+      }
+      setGuestbookDraft({
+        ...defaultGuestbookDraft,
+        nickname: authenticated ? "仰晨" : guestbookDraft.nickname,
+        email: authenticated ? "" : guestbookDraft.email
+      });
+      setGuestbookReplyTarget(null);
+      setMessage(authenticated ? (guestbookReplyTarget ? "回复已发送" : "留言已发送") : "留言已提交，审核通过后会公开显示");
+      await refreshGuestbook();
+    } catch (caught) {
+      setError(asErrorMessage(caught));
+      await refreshGuestbookCaptcha();
+    } finally {
+      setGuestbookSubmitting(false);
+    }
+  }
+
+  /** Deletes a guestbook message after administrator confirmation. */
+  async function removeGuestbookMessage(id: number) {
+    if (!window.confirm("确定删除这条留言吗？")) {
+      return;
+    }
+
+    setError("");
+    try {
+      await deleteMessage(id);
+      setMessage("留言已删除");
+      await refreshGuestbook();
+    } catch (caught) {
+      setError(asErrorMessage(caught));
+    }
+  }
+
+  /** Approves a pending guestbook message for public display. */
+  async function approveGuestbookMessage(id: number) {
+    setError("");
+    try {
+      await approveMessage(id);
+      setMessage("留言已通过审核");
+      await refreshGuestbook();
+    } catch (caught) {
+      setError(asErrorMessage(caught));
+    }
+  }
+
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <button className="brand-button" type="button" onClick={() => showList()}>
+          <img className="brand-mark" src="/logo.svg" alt="Cloudflare Blog" />
+          <span>
+            <strong>Yc556 Blog</strong>
+            <small>
+              仰晨个人博客
+              {authenticated && <span className="auth-pill brand-auth-pill">管理员视图</span>}
+            </small>
+          </span>
+        </button>
+        <nav className="top-actions">
+          <button className="text-button" type="button" onClick={() => void showGuestbook()}>
+            <MessageSquareText size={16} />
+            留言板
+          </button>
+          {authenticated && (
+            <button className="icon-button" type="button" onClick={newArticle} aria-label="新增文章" title="新增文章">
+              <Plus size={18} />
+            </button>
+          )}
+          {authenticated ? (
+            <button className="text-button" type="button" onClick={handleLogout}>
+              <LogOut size={16} />
+              退出
+            </button>
+          ) : (
+            <button className="text-button" type="button" onClick={() => setLoginOpen(true)}>
+              <LogIn size={16} />
+              登录
+            </button>
+          )}
+        </nav>
+      </header>
+
+      <div className="toast-region" aria-live="polite" aria-atomic="true">
+        {message && <Status tone="success" text={message} onClose={() => setMessage("")} />}
+        {notice && <Status tone="info" text={notice} onClose={() => setNotice("")} />}
+        {error && <Status tone="error" text={error} onClose={() => setError("")} />}
+      </div>
+
+      <main
+        className={
+          view === "list" ? "layout" : view === "editor" ? "layout layout-detail layout-editor" : "layout layout-detail"
+        }
+      >
+        {view === "list" && (
+          <aside className="sidebar">
+            <div className="search-box">
+              <span className="search-hint-icon" tabIndex={0} aria-label="搜索提示">
+                <Search size={18} aria-hidden="true" />
+                <span className="search-tooltip" role="tooltip">
+                  输入2个字以上才会自动搜索。
+                </span>
+              </span>
+              <input
+                aria-label="搜索文章"
+                placeholder="搜索标题、摘要或正文"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && effectiveSearch.length > 0 && effectiveSearch.length < minAutoSearchLength) {
+                    event.preventDefault();
+                    setNotice("至少输入 2 个字再搜索");
+                  }
+                }}
+              />
+              {search && (
+                <button className="clear-button" type="button" onClick={() => setSearch("")} aria-label="清空搜索">
+                  <X size={16} />
+                </button>
+              )}
+            </div>
+
+            <section className="tag-panel" aria-label="标签筛选">
+              <div className="section-title">
+                <Tag size={16} />
+                标签
+              </div>
+              <button className={selectedTag ? "tag-filter" : "tag-filter active"} type="button" onClick={() => setSelectedTag("")}>
+                全部文章
+                <span>{allArticleTotal}</span>
+              </button>
+              {tags.map((tag) => (
+                <button
+                  className={selectedTag === tag.slug ? "tag-filter active" : "tag-filter"}
+                  type="button"
+                  key={tag.slug}
+                  onClick={() => setSelectedTag(tag.slug)}
+                >
+                  {tag.name}
+                  <span>{tag.count ?? 0}</span>
+                </button>
+              ))}
+            </section>
+          </aside>
+        )}
+
+        <section className="content-area">
+          {view === "list" && (
+            <ArticleList
+              articles={articles}
+              hasMore={hasMoreArticles}
+              loading={loading}
+              loadingMore={loadingMore}
+              search={appliedSearch}
+              selectedTagName={selectedTagName}
+              authenticated={authenticated}
+              onOpen={openArticle}
+              onEdit={editArticle}
+            />
+          )}
+
+          {view === "article" && activeArticle && (
+            <ArticleView
+              article={activeArticle}
+              authenticated={authenticated}
+              onBack={() => showList({ restoreScroll: true })}
+              onEdit={() => editArticle(activeArticle.slug)}
+              onDelete={() => removeArticle(activeArticle.slug)}
+            />
+          )}
+
+          {view === "editor" && authenticated && (
+            <Editor
+              draft={draft}
+              availableTags={tagOptions}
+              editing={Boolean(editingSlug)}
+              onDraftChange={setDraft}
+              onSubmit={submitDraft}
+              onCancel={() => (activeArticle ? setView("article") : showList())}
+            />
+          )}
+
+          {view === "editor" && !authenticated && <EmptyState title="需要登录" description="登录后才能新增或编辑文章。" />}
+
+          {view === "guestbook" && (
+            <Guestbook
+              authenticated={authenticated}
+              captcha={guestbookCaptcha}
+              cooldown={guestbookCooldown}
+              draft={guestbookDraft}
+              loading={guestbookLoading}
+              messages={guestbookMessages}
+              replyTarget={guestbookReplyTarget}
+              submitting={guestbookSubmitting}
+              onCancelReply={() => {
+                setGuestbookReplyTarget(null);
+                setGuestbookDraft((currentDraft) => ({ ...currentDraft, parentId: null }));
+              }}
+              onApprove={(id) => void approveGuestbookMessage(id)}
+              onDelete={(id) => void removeGuestbookMessage(id)}
+              onDraftChange={setGuestbookDraft}
+              onRefreshCaptcha={() => void refreshGuestbookCaptcha()}
+              onReply={(replyTarget) => {
+                setGuestbookReplyTarget(replyTarget);
+                setGuestbookDraft((currentDraft) => ({ ...currentDraft, parentId: replyTarget.id }));
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+              onSubmit={submitGuestbookMessage}
+            />
+          )}
+        </section>
+      </main>
+
+      {loginOpen && <LoginDialog onClose={() => setLoginOpen(false)} onLogin={handleLogin} />}
+    </div>
+  );
+}
+
+function Guestbook(props: {
+  authenticated: boolean;
+  captcha: GuestbookCaptcha | null;
+  cooldown: number;
+  draft: GuestbookInput;
+  loading: boolean;
+  messages: GuestbookMessage[];
+  replyTarget: GuestbookMessage | null;
+  submitting: boolean;
+  onCancelReply: () => void;
+  onApprove: (id: number) => void;
+  onDelete: (id: number) => void;
+  onDraftChange: (draft: GuestbookInput) => void;
+  onRefreshCaptcha: () => void;
+  onReply: (message: GuestbookMessage) => void;
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+}) {
+  const canSubmit = props.authenticated || props.cooldown === 0;
+
+  /** Updates one field in the controlled guestbook draft. */
+  function setDraftField<Key extends keyof GuestbookInput>(key: Key, value: GuestbookInput[Key]) {
+    props.onDraftChange({ ...props.draft, [key]: value });
+  }
+
+  return (
+    <div className="guestbook-page">
+      <section className="guestbook-compose" aria-label="留言输入">
+        {props.replyTarget && (
+          <div className="reply-context">
+            <div className="reply-context-header">
+              <strong>您正在回复[{props.replyTarget.nickname}]的以下评论：</strong>
+              <button className="text-button ghost" type="button" onClick={props.onCancelReply}>
+                取消回复
+              </button>
+            </div>
+            <p>{props.replyTarget.content}</p>
+          </div>
+        )}
+        <form className="guestbook-form" onSubmit={props.onSubmit}>
+          <label className="guestbook-content-field">
+            留言
+            <textarea
+              required
+              maxLength={500}
+              rows={5}
+              value={props.draft.content}
+              onChange={(event) => setDraftField("content", event.target.value)}
+              placeholder="写下想说的话"
+            />
+            <span className="field-hint">{props.draft.content.length}/500</span>
+          </label>
+          <div className="guestbook-fields">
+            <label>
+              昵称
+              <input
+                required
+                maxLength={10}
+                value={props.authenticated ? "仰晨" : props.draft.nickname}
+                onChange={(event) => setDraftField("nickname", event.target.value)}
+                disabled={props.authenticated}
+                placeholder="最多 10 个字"
+              />
+            </label>
+            <label>
+              邮箱
+              <input
+                required={!props.authenticated}
+                maxLength={120}
+                type="email"
+                value={props.draft.email}
+                onChange={(event) => setDraftField("email", event.target.value)}
+                placeholder={props.authenticated ? "管理员可不填" : "不会公开显示"}
+              />
+            </label>
+            {!props.authenticated && (
+              <div className="captcha-field">
+                <span className="field-label">验证码</span>
+                <div className="captcha-row">
+                  <button className="captcha-question" type="button" onClick={props.onRefreshCaptcha} title="刷新验证码">
+                    {props.captcha?.question ?? "加载中..."}
+                  </button>
+                  <input
+                    required
+                    inputMode="numeric"
+                    value={props.draft.captchaAnswer ?? ""}
+                    onChange={(event) => setDraftField("captchaAnswer", event.target.value)}
+                    placeholder="答案"
+                    aria-label="验证码答案"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="guestbook-submit-row">
+            <span>{props.authenticated ? "管理员发送不需要邮箱和验证码。" : props.cooldown > 0 ? `请 ${props.cooldown} 秒后再发送。` : "游客需要填写全部内容。"}</span>
+            <button className="text-button primary" type="submit" disabled={props.submitting || !canSubmit}>
+              {props.submitting ? "发送中..." : props.replyTarget ? "发送回复" : "发送留言"}
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <section className="guestbook-list" aria-label="留言列表">
+        <div className="guestbook-list-heading">
+          <h1>留言列表</h1>
+          <span>{props.messages.length} 条主留言</span>
+        </div>
+        {props.loading && <div className="skeleton">留言加载中...</div>}
+        {!props.loading && props.messages.length === 0 && <EmptyState title="还没有留言" description="写下第一条留言吧。" />}
+        {props.messages.map((message) => (
+          <GuestbookMessageItem
+            authenticated={props.authenticated}
+            key={message.id}
+            message={message}
+            onApprove={props.onApprove}
+            onDelete={props.onDelete}
+            onReply={props.onReply}
+          />
+        ))}
+      </section>
+    </div>
+  );
+}
+
+function GuestbookMessageItem(props: {
+  authenticated: boolean;
+  message: GuestbookMessage;
+  onApprove: (id: number) => void;
+  onDelete: (id: number) => void;
+  onReply: (message: GuestbookMessage) => void;
+}) {
+  return (
+    <article className="message-card">
+      <div className="message-head">
+        <div>
+          <strong>{props.message.nickname}</strong>
+          {props.authenticated && props.message.status === "pending" && <span className="pending-pill">待审核</span>}
+          {props.authenticated && props.message.email && <span className="message-email"> {props.message.email}</span>}
+          <time title={formatDate(props.message.createdAt)}>{formatDate(props.message.createdAt)}</time>
+        </div>
+        <div className="message-actions">
+          <button className="text-button ghost" type="button" onClick={() => props.onReply(props.message)}>
+            回复
+          </button>
+          {props.authenticated && props.message.status === "pending" && (
+            <button className="text-button ghost approve-action" type="button" onClick={() => props.onApprove(props.message.id)}>
+              通过
+            </button>
+          )}
+          {props.authenticated && (
+            <button className="icon-button subtle danger-icon" type="button" onClick={() => props.onDelete(props.message.id)} aria-label="删除留言">
+              <Trash2 size={16} />
+            </button>
+          )}
+        </div>
+      </div>
+      <p className="message-content">{props.message.content}</p>
+      {props.message.replies.length > 0 && (
+        <div className="message-replies">
+          {props.message.replies.map((reply) => (
+            <article className="message-reply" key={reply.id}>
+              <div className="message-head">
+                <div>
+                  <strong>{reply.nickname}</strong>
+                  {props.authenticated && reply.status === "pending" && <span className="pending-pill">待审核</span>}
+                  {props.authenticated && reply.email && <span className="message-email"> {reply.email}</span>}
+                  {reply.replyToNickname && <span className="reply-to">回复{reply.replyToNickname}：</span>}
+                  <time title={formatDate(reply.createdAt)}>{formatDate(reply.createdAt)}</time>
+                </div>
+                <div className="message-actions">
+                  <button className="text-button ghost" type="button" onClick={() => props.onReply(reply)}>
+                    回复
+                  </button>
+                  {props.authenticated && reply.status === "pending" && (
+                    <button className="text-button ghost approve-action" type="button" onClick={() => props.onApprove(reply.id)}>
+                      通过
+                    </button>
+                  )}
+                  {props.authenticated && (
+                    <button className="icon-button subtle danger-icon" type="button" onClick={() => props.onDelete(reply.id)} aria-label="删除回复">
+                      <Trash2 size={16} />
+                    </button>
+                  )}
+                </div>
+              </div>
+              <p className="message-content">{reply.content}</p>
+            </article>
+          ))}
+        </div>
+      )}
+    </article>
+  );
+}
+
+/** Reads the remaining local guest cooldown in seconds. */
+function readGuestbookCooldown() {
+  const lastSentAt = Number(window.localStorage.getItem(guestbookCooldownKey) ?? 0); // Last local guest send timestamp.
+  if (!lastSentAt) {
+    return 0;
+  }
+
+  const elapsedSeconds = Math.floor((Date.now() - lastSentAt) / 1000); // Seconds since the latest local send.
+  return Math.max(0, guestbookCooldownSeconds - elapsedSeconds);
+}
+
+function ArticleList(props: {
+  articles: ArticleSummary[];
+  hasMore: boolean;
+  loading: boolean;
+  loadingMore: boolean;
+  search: string;
+  selectedTagName: string;
+  authenticated: boolean;
+  onOpen: (slug: string) => void;
+  onEdit: (slug: string) => void;
+}) {
+  const hasSearch = props.search.trim().length > 0;
+  if (!props.loading && props.articles.length === 0) {
+    if (hasSearch) {
+      return <EmptyState title="没有匹配的文章" description={`没有找到包含“${props.search.trim()}”的文章。`} />;
+    }
+
+    if (props.selectedTagName) {
+      return <EmptyState title="这个标签下没有文章" description="换个标签或清空筛选后再看看。" />;
+    }
+
+    return <EmptyState title="还没有文章" description="登录后可以写下第一篇 Markdown 文章。" />;
+  }
+
+  return (
+    <>
+      <div className="article-list">
+        {props.loading && <div className="skeleton">加载中...</div>}
+        {props.articles.map((article) => (
+          <article className={article.coverImageUrl ? "article-row has-cover" : "article-row"} key={article.slug}>
+            {article.coverImageUrl && (
+              <button
+                className="article-cover"
+                type="button"
+                onClick={() => props.onOpen(article.slug)}
+                aria-label={`打开文章：${article.title}`}
+              >
+                <img src={article.coverImageUrl} alt="" loading="lazy" />
+              </button>
+            )}
+            <button className="article-main" type="button" onClick={() => props.onOpen(article.slug)}>
+              <h2>{article.title}</h2>
+              {article.excerpt && <p>{article.excerpt}</p>}
+              {article.searchSnippet && (
+                <p className="search-snippet">
+                  <span className="search-snippet-label">正文命中</span>
+                  <span className="search-snippet-text">
+                    <HighlightedSnippet query={props.search} text={article.searchSnippet} />
+                  </span>
+                </p>
+              )}
+              <TagList tags={article.tags} />
+              <span className="article-date" title={formatArticleTimeTitle(article.createdAt, article.updatedAt)}>
+                {formatDate(article.updatedAt)}
+              </span>
+            </button>
+            <div className="row-actions">
+              {article.visibility === "private" && <Lock size={16} aria-label="登录可见" />}
+              {props.authenticated && (
+                <button className="icon-button subtle" type="button" onClick={() => props.onEdit(article.slug)} aria-label="编辑文章">
+                  <FilePenLine size={16} />
+                </button>
+              )}
+            </div>
+          </article>
+        ))}
+      </div>
+      {(props.loadingMore || props.hasMore) && (
+        <div className="load-more-status" aria-live="polite">
+          {props.loadingMore ? "加载更多文章..." : "继续下滑加载更多"}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Highlights the matching search phrase inside a body snippet without injecting HTML. */
+function HighlightedSnippet(props: { query: string; text: string }) {
+  const query = props.query.trim(); // Search phrase highlighted in the snippet.
+  if (!query) {
+    return <>{props.text}</>;
+  }
+
+  const lowerText = props.text.toLowerCase(); // Lowercase snippet for finding all matches.
+  const lowerQuery = query.toLowerCase(); // Lowercase query for case-insensitive matching.
+  const parts: React.ReactNode[] = [];
+  let cursor = 0; // Current text offset while splitting the snippet.
+  let matchIndex = lowerText.indexOf(lowerQuery);
+
+  while (matchIndex >= 0) {
+    if (matchIndex > cursor) {
+      parts.push(props.text.slice(cursor, matchIndex));
+    }
+
+    const endIndex = matchIndex + query.length; // End offset of the highlighted phrase.
+    parts.push(<mark key={`${matchIndex}-${endIndex}`}>{props.text.slice(matchIndex, endIndex)}</mark>);
+    cursor = endIndex;
+    matchIndex = lowerText.indexOf(lowerQuery, cursor);
+  }
+
+  if (cursor < props.text.length) {
+    parts.push(props.text.slice(cursor));
+  }
+
+  return <>{parts}</>;
+}
+
+function ArticleView(props: {
+  article: Article;
+  authenticated: boolean;
+  onBack: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <article className="article-page">
+      <div className="page-tools">
+        <button className="text-button ghost" type="button" onClick={props.onBack}>
+          <ArrowLeft size={16} />
+          返回
+        </button>
+        {props.authenticated && (
+          <div className="tool-group">
+            <button className="text-button ghost" type="button" onClick={props.onEdit}>
+              <FilePenLine size={16} />
+              编辑
+            </button>
+            <button className="text-button danger" type="button" onClick={props.onDelete}>
+              <Trash2 size={16} />
+              删除
+            </button>
+          </div>
+        )}
+      </div>
+      <header className="article-header">
+        <div className="article-meta">
+          <strong className="article-meta-title">{props.article.title}</strong>
+          <span className="dot" aria-hidden="true" />
+          <span title={formatArticleTimeTitle(props.article.createdAt, props.article.updatedAt)}>
+            {formatDate(props.article.updatedAt)}
+          </span>
+        </div>
+      </header>
+      <div className="markdown-body article-markdown">
+        <MarkdownRenderer content={props.article.content} />
+      </div>
+    </article>
+  );
+}
+
+function MarkdownRenderer(props: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeSanitize, [rehypeHighlight, { detect: true }]]}
+      components={{
+        pre: ({ children }) => <CodeBlock>{children}</CodeBlock>
+      }}
+    >
+      {props.content}
+    </ReactMarkdown>
+  );
+}
+
+function CodeBlock(props: { children: React.ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  const codeElement = Array.isArray(props.children) ? props.children[0] : props.children;
+  const codeProps =
+    typeof codeElement === "object" && codeElement !== null && "props" in codeElement
+      ? (codeElement.props as { className?: string; children?: React.ReactNode })
+      : {};
+  const className = codeProps.className ?? "";
+  const language = className.match(/language-([\w-]+)/)?.[1] ?? "text";
+  const codeText = extractText(codeProps.children);
+
+  async function copyCode() {
+    try {
+      await navigator.clipboard.writeText(codeText);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <div className="code-block">
+      <div className="code-block-header">
+        <span>{language}</span>
+        <button type="button" onClick={copyCode}>
+          {copied ? <Check size={14} /> : <Copy size={14} />}
+          {copied ? "已复制" : "复制"}
+        </button>
+      </div>
+      <pre>{props.children}</pre>
+    </div>
+  );
+}
+
+function extractText(value: React.ReactNode): string {
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(extractText).join("");
+  }
+
+  if (typeof value === "object" && value !== null && "props" in value) {
+    return extractText((value.props as { children?: React.ReactNode }).children);
+  }
+
+  return "";
+}
+
+function Editor(props: {
+  draft: ArticleInput;
+  availableTags: TagType[];
+  editing: boolean;
+  onDraftChange: (draft: ArticleInput) => void;
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+  onCancel: () => void;
+}) {
+  const setField = <Key extends keyof ArticleInput>(key: Key, value: ArticleInput[Key]) => {
+    props.onDraftChange({ ...props.draft, [key]: value });
+  };
+
+  return (
+    <form className="editor" onSubmit={props.onSubmit}>
+      <div className="content-heading compact">
+        <div>
+          <p>{props.editing ? "Edit Post" : "New Post"}</p>
+          <h1>{props.editing ? "编辑文章" : "新增文章"}</h1>
+        </div>
+        <div className="tool-group">
+          <button className="text-button ghost" type="button" onClick={props.onCancel}>
+            取消
+          </button>
+          <button className="text-button primary" type="submit">
+            保存
+          </button>
+        </div>
+      </div>
+
+      <div className="editor-grid">
+        <div className="editor-fields">
+          <div className="editor-meta">
+            <label>
+              标题
+              <input
+                required
+                maxLength={120}
+                value={props.draft.title}
+                onChange={(event) => setField("title", event.target.value)}
+                placeholder="文章标题"
+              />
+            </label>
+            <label>
+              摘要
+              <textarea
+                maxLength={240}
+                rows={3}
+                value={props.draft.excerpt}
+                onChange={(event) => setField("excerpt", event.target.value)}
+                placeholder="一两句话概括这篇文章"
+              />
+            </label>
+            <label>
+              列表图片
+              <input
+                maxLength={2048}
+                value={props.draft.coverImageUrl}
+                onChange={(event) => setField("coverImageUrl", event.target.value)}
+                placeholder="图片 URL，可留空"
+              />
+            </label>
+            <TagSelector
+              selectedTags={props.draft.tags}
+              availableTags={props.availableTags}
+              onChange={(tags) => setField("tags", tags)}
+            />
+            <fieldset className="visibility-control">
+              <legend>可见性</legend>
+              <SegmentedVisibility value={props.draft.visibility} onChange={(value) => setField("visibility", value)} />
+            </fieldset>
+          </div>
+          <div className="editor-compose">
+            <label className="content-field">
+              Markdown
+              <textarea
+                required
+                value={props.draft.content}
+                onChange={(event) => setField("content", event.target.value)}
+                spellCheck={false}
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="preview-panel">
+          <div className="preview-title">预览</div>
+          <div className="markdown-body article-markdown preview-body">
+            <MarkdownRenderer content={props.draft.content || "开始写 Markdown 后，这里会实时预览。"} />
+          </div>
+        </div>
+      </div>
+    </form>
+  );
+}
+
+function TagSelector(props: {
+  selectedTags: string[];
+  availableTags: TagType[];
+  onChange: (tags: string[]) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [focused, setFocused] = useState(false);
+  const normalizedSelected = useMemo(() => new Set(props.selectedTags.map((tag) => tag.toLowerCase())), [props.selectedTags]);
+  const filteredTags = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return props.availableTags
+      .filter((tag) => !normalizedSelected.has(tag.name.toLowerCase()))
+      .filter((tag) => !normalizedQuery || tag.name.toLowerCase().includes(normalizedQuery))
+      .slice(0, 8);
+  }, [props.availableTags, normalizedSelected, query]);
+  const canCreate = query.trim().length > 0 && !normalizedSelected.has(query.trim().toLowerCase());
+  const showOptions = focused && (filteredTags.length > 0 || canCreate);
+
+  function addTag(tagName: string) {
+    const cleaned = tagName.trim();
+    if (!cleaned || normalizedSelected.has(cleaned.toLowerCase())) {
+      setQuery("");
+      return;
+    }
+
+    props.onChange([...props.selectedTags, cleaned]);
+    setQuery("");
+    setFocused(true);
+  }
+
+  function removeTag(tagName: string) {
+    props.onChange(props.selectedTags.filter((tag) => tag.toLowerCase() !== tagName.toLowerCase()));
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addTag(query || filteredTags[0]?.name || "");
+    }
+
+    if (event.key === "Backspace" && !query && props.selectedTags.length > 0) {
+      event.preventDefault();
+      removeTag(props.selectedTags[props.selectedTags.length - 1]);
+    }
+  }
+
+  return (
+    <div className="tag-selector-field">
+      <span className="field-label">标签</span>
+      <div
+        className="tag-selector"
+        onFocus={() => setFocused(true)}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) {
+            setFocused(false);
+          }
+        }}
+      >
+        <div className="tag-selector-input">
+          {props.selectedTags.map((tag) => (
+            <button className="tag-chip" type="button" key={tag} onClick={() => removeTag(tag)} title={`移除 ${tag}`}>
+              {tag}
+              <X size={13} />
+            </button>
+          ))}
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={handleKeyDown}
+            onFocus={() => setFocused(true)}
+            placeholder={props.selectedTags.length ? "搜索或新增标签" : "搜索标签，回车新增"}
+            aria-label="搜索或新增标签"
+          />
+          <Search size={16} className="tag-selector-search" aria-hidden="true" />
+        </div>
+        {showOptions && (
+          <div className="tag-options" role="listbox" aria-label="标签候选">
+            {filteredTags.map((tag) => (
+              <button
+                className="tag-option"
+                type="button"
+                key={tag.slug}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => addTag(tag.name)}
+              >
+                <TagIcon size={14} />
+                {tag.name}
+              </button>
+            ))}
+            {canCreate && (
+              <button
+                className="tag-option create"
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => addTag(query)}
+              >
+                <Plus size={14} />
+                新增“{query.trim()}”
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SegmentedVisibility(props: { value: Visibility; onChange: (value: Visibility) => void }) {
+  return (
+    <div className="segmented">
+      <button
+        className={props.value === "public" ? "active" : ""}
+        type="button"
+        onClick={() => props.onChange("public")}
+      >
+        <Eye size={16} />
+        公开
+      </button>
+      <button
+        className={props.value === "private" ? "active" : ""}
+        type="button"
+        onClick={() => props.onChange("private")}
+      >
+        <EyeOff size={16} />
+        登录可见
+      </button>
+    </div>
+  );
+}
+
+function LoginDialog(props: { onClose: () => void; onLogin: (username: string, password: string) => Promise<void> }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError("");
+    try {
+      await props.onLogin(username, password);
+    } catch (caught) {
+      setError(asErrorMessage(caught));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <form className="login-dialog" onSubmit={submit}>
+        <div className="dialog-header">
+          <h2>管理员登录</h2>
+          <button className="icon-button subtle" type="button" onClick={props.onClose} aria-label="关闭">
+            <X size={18} />
+          </button>
+        </div>
+        {error && <Status tone="error" text={error} onClose={() => setError("")} />}
+        <label>
+          用户名
+          <input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" />
+        </label>
+        <label>
+          密码
+          <input
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            autoComplete="current-password"
+          />
+        </label>
+        <button className="text-button primary full" type="submit" disabled={submitting}>
+          {submitting ? "登录中..." : "登录"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function TagList(props: { tags: TagType[] }) {
+  if (props.tags.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="tag-list">
+      {props.tags.map((tag) => (
+        <span key={tag.slug}>#{tag.name}</span>
+      ))}
+    </div>
+  );
+}
+
+function Status(props: { tone: "success" | "info" | "error"; text: string; onClose: () => void }) {
+  return (
+    <div className={`status ${props.tone}`}>
+      <span>{props.text}</span>
+      <button type="button" onClick={props.onClose} aria-label="关闭提示">
+        <X size={16} />
+      </button>
+    </div>
+  );
+}
+
+function EmptyState(props: { title: string; description: string }) {
+  return (
+    <div className="empty-state">
+      <h2>{props.title}</h2>
+      <p>{props.description}</p>
+    </div>
+  );
+}
+
+function asErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "操作失败";
+}

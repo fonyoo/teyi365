@@ -1,0 +1,16 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="65 icon">
+  <g fill="none" stroke="#111" stroke-linecap="round" stroke-linejoin="round" transform="translate(-9 -2)">
+    <path d="M78 22L78 50L70 64" stroke-width="9" opacity=".28"/>
+    <path d="M77 22L77 50L69 65" stroke-width="7" opacity=".86"/>
+    <path d="M39 94C32 73 38 50 54 40C63 35 72 34 89 35" stroke-width="10" opacity=".28"/>
+    <path d="M40 93C33 72 39 51 54 41C63 36 72 35 89 36" stroke-width="8" opacity=".96"/>
+    <path d="M89 36L104 36" stroke-width="10" opacity=".28"/>
+    <path d="M88 35L104 35" stroke-width="8" opacity=".96"/>
+    <path d="M70 64C82 52 103 55 109 72C117 95 94 113 69 109" stroke-width="10" opacity=".28"/>
+    <path d="M70 64C82 53 101 56 107 72C115 94 93 110 70 106" stroke-width="8" opacity=".96"/>
+    <path d="M67 108C58 109 49 107 42 100" stroke-width="10" opacity=".28"/>
+    <path d="M66 105C57 106 50 104 43 98" stroke-width="8" opacity=".96"/>
+    <path d="M37 96C37 84 47 72 62 68C77 65 91 74 88 93C80 98 61 99 49 94C43 91 39 90 37 96Z" stroke-width="9" opacity=".28"/>
+    <path d="M39 95C40 84 49 75 63 71C76 68 86 76 85 91C77 95 62 96 51 92C46 90 41 89 39 95Z" stroke-width="7" opacity=".96"/>
+  </g>
+</svg>

@@ -1,0 +1,1089 @@
+interface Env {
+  DB: D1Database;
+  ADMIN_USERNAME: string;
+  ADMIN_PASSWORD: string;
+  SESSION_SECRET: string;
+}
+
+type Visibility = "public" | "private";
+
+interface ArticleRow {
+  id: number;
+  slug: string;
+  title: string;
+  excerpt: string;
+  cover_image_url: string;
+  content_md: string;
+  visibility: Visibility;
+  created_at: string;
+  updated_at: string;
+}
+
+interface TagRow {
+  id: number;
+  name: string;
+  slug: string;
+}
+
+interface ArticleInput {
+  title: string;
+  excerpt?: string;
+  coverImageUrl?: string;
+  content: string;
+  visibility: Visibility;
+  tags: string[];
+}
+
+interface SearchSnippetRow {
+  title: string;
+  excerpt: string;
+  content_md: string;
+}
+
+interface MessageRow {
+  id: number;
+  parent_id: number | null;
+  nickname: string;
+  email: string;
+  content: string;
+  author_hash: string;
+  reply_to_nickname: string;
+  status: MessageStatus;
+  created_at: string;
+}
+
+interface MessageInput {
+  nickname: string;
+  email: string;
+  content: string;
+  parentId: number | null;
+  captchaToken: string;
+  captchaAnswer: string;
+}
+
+interface CaptchaOperands {
+  left: number;
+  right: number;
+}
+
+type MessageStatus = "pending" | "approved";
+
+type ApiErrorCode =
+  | "BAD_REQUEST"
+  | "UNAUTHORIZED"
+  | "FORBIDDEN"
+  | "NOT_FOUND"
+  | "RATE_LIMIT"
+  | "METHOD_NOT_ALLOWED"
+  | "SERVER_ERROR";
+
+const sessionCookieName = "blog_session";
+const oneWeekSeconds = 60 * 60 * 24 * 7;
+const articlePageSize = 10; // Number of articles returned per list page.
+const adminMessageNickname = "仰晨"; // Default nickname used for administrator messages.
+const guestMessageIntervalSeconds = 120; // Minimum seconds between guest messages.
+const messageCaptchaTtlMs = 10 * 60 * 1000; // Time before a captcha token expires.
+const messageNicknameMaxLength = 10; // Maximum displayed nickname length.
+const messageEmailMaxLength = 120; // Maximum email length stored for administrator view.
+const messageContentMaxLength = 500; // Maximum plain-text message length.
+
+export const onRequest: PagesFunction<Env> = async (context) => {
+  try {
+    const url = new URL(context.request.url);
+    const segments = url.pathname.replace(/^\/api\/?/, "").split("/").filter(Boolean).map(decodePathSegment);
+
+    if (segments[0] === "auth") {
+      return await handleAuth(context, segments.slice(1));
+    }
+
+    if (segments[0] === "articles") {
+      return await handleArticles(context, segments.slice(1));
+    }
+
+    if (segments[0] === "article-search" && context.request.method === "GET") {
+      return await handleArticleSearch(context);
+    }
+
+    if (segments[0] === "messages") {
+      return await handleMessages(context, segments.slice(1));
+    }
+
+    if (segments[0] === "tags" && context.request.method === "GET") {
+      return json({
+        tags: await listTags(context.env.DB, {
+          authenticated: await isAuthenticated(context.request, context.env),
+          search: url.searchParams.get("search") ?? ""
+        })
+      });
+    }
+
+    return jsonError("NOT_FOUND", "接口不存在", 404);
+  } catch (error) {
+    if (error instanceof ApiError) {
+      return jsonError(error.code, error.message, error.status);
+    }
+
+    console.error(error);
+    return jsonError("SERVER_ERROR", "服务器开小差了，请稍后再试", 500);
+  }
+};
+
+async function handleAuth(context: EventContext<Env, string, unknown>, segments: string[]) {
+  const { request, env } = context;
+  const action = segments[0];
+
+  if (action === "me" && request.method === "GET") {
+    return json({ authenticated: await isAuthenticated(request, env) });
+  }
+
+  if (action === "login" && request.method === "POST") {
+    const body = await readJson<{ username?: string; password?: string }>(request);
+    const username = String(body.username ?? "");
+    const password = String(body.password ?? "");
+
+    if (!safeEqual(username, env.ADMIN_USERNAME) || !safeEqual(password, env.ADMIN_PASSWORD)) {
+      return jsonError("UNAUTHORIZED", "用户名或密码不正确", 401);
+    }
+
+    const cookie = await createSessionCookie(request, env);
+    return json(
+      { authenticated: true },
+      {
+        headers: {
+          "Set-Cookie": cookie
+        }
+      }
+    );
+  }
+
+  if (action === "logout" && request.method === "POST") {
+    return json(
+      { authenticated: false },
+      {
+        headers: {
+          "Set-Cookie": `${sessionCookieName}=; ${cookieAttributes(request)} Max-Age=0`
+        }
+      }
+    );
+  }
+
+  return jsonError("METHOD_NOT_ALLOWED", "不支持的认证请求", 405);
+}
+
+async function handleArticles(context: EventContext<Env, string, unknown>, segments: string[]) {
+  const { request, env } = context;
+  const authenticated = await isAuthenticated(request, env);
+
+  if (segments.length === 0 && request.method === "GET") {
+    const url = new URL(request.url);
+    return json({
+      ...(await listArticles(env.DB, {
+        authenticated,
+        search: url.searchParams.get("search") ?? "",
+        tag: url.searchParams.get("tag") ?? "",
+        page: parsePositiveInteger(url.searchParams.get("page"), 1),
+        limit: articlePageSize
+      }))
+    });
+  }
+
+  if (segments.length === 0 && request.method === "POST") {
+    await requireAuth(request, env);
+    const input = validateArticleInput(await readJson<Partial<ArticleInput>>(request));
+    const article = await createArticle(env.DB, input);
+    return json({ article }, { status: 201 });
+  }
+
+  const slug = segments[0];
+  if (!slug) {
+    return jsonError("NOT_FOUND", "文章不存在", 404);
+  }
+
+  if (request.method === "GET") {
+    const article = await getArticleBySlug(env.DB, slug);
+    if (!article || (!authenticated && article.visibility === "private")) {
+      return jsonError("NOT_FOUND", "文章不存在或需要登录后查看", 404);
+    }
+
+    return json({ article: await articleWithTags(env.DB, article) });
+  }
+
+  if (request.method === "PUT") {
+    await requireAuth(request, env);
+    const input = validateArticleInput(await readJson<Partial<ArticleInput>>(request));
+    const updated = await updateArticle(env.DB, slug, input);
+
+    if (!updated) {
+      return jsonError("NOT_FOUND", "文章不存在", 404);
+    }
+
+    return json({ article: updated });
+  }
+
+  if (request.method === "DELETE") {
+    await requireAuth(request, env);
+    await env.DB.prepare("DELETE FROM article_tags WHERE article_id = (SELECT id FROM articles WHERE slug = ?)").bind(slug).run();
+    const result = await env.DB.prepare("DELETE FROM articles WHERE slug = ?").bind(slug).run();
+
+    if (result.meta.changes === 0) {
+      return jsonError("NOT_FOUND", "文章不存在", 404);
+    }
+
+    await cleanupOrphanedTags(env.DB);
+    return json({ ok: true });
+  }
+
+  return jsonError("METHOD_NOT_ALLOWED", "不支持的文章请求", 405);
+}
+
+async function handleArticleSearch(context: EventContext<Env, string, unknown>) {
+  const { request, env } = context;
+  const authenticated = await isAuthenticated(request, env);
+  const url = new URL(request.url);
+  const search = url.searchParams.get("search") ?? "";
+  const tag = url.searchParams.get("tag") ?? "";
+  const page = parsePositiveInteger(url.searchParams.get("page"), 1);
+  const [articleResult, allArticleResult, tags] = await Promise.all([
+    listArticles(env.DB, {
+      authenticated,
+      search,
+      tag,
+      page,
+      limit: articlePageSize
+    }),
+    listArticles(env.DB, {
+      authenticated,
+      search,
+      tag: "",
+      page: 1,
+      limit: articlePageSize
+    }),
+    listTags(env.DB, {
+      authenticated,
+      search
+    })
+  ]);
+
+  return json({
+    articleResult,
+    allArticleTotal: allArticleResult.total,
+    tags
+  });
+}
+
+/** Routes guestbook message requests and applies authentication-aware behavior. */
+async function handleMessages(context: EventContext<Env, string, unknown>, segments: string[]) {
+  const { request, env } = context;
+  const authenticated = await isAuthenticated(request, env);
+
+  if (segments[0] === "captcha" && request.method === "GET") {
+    return json({ captcha: await createGuestbookCaptcha(env.SESSION_SECRET) });
+  }
+
+  if (segments.length === 0 && request.method === "GET") {
+    return json({ messages: await listMessages(env.DB, authenticated) });
+  }
+
+  if (segments.length === 0 && request.method === "POST") {
+    const input = validateMessageInput(await readJson<Partial<MessageInput>>(request), authenticated);
+    if (!authenticated && !(await verifyGuestbookCaptcha(env.SESSION_SECRET, input.captchaToken, input.captchaAnswer))) {
+      return jsonError("BAD_REQUEST", "验证码不正确或已过期", 400);
+    }
+
+    const replyTarget = input.parentId ? normalizeReplyTarget(await getMessageById(env.DB, input.parentId)) : null;
+    const messageInput = replyTarget ? { ...input, parentId: replyTarget.parentId } : input;
+    const replyToNickname = replyTarget?.replyToNickname ?? ""; // Nickname shown for flat child-to-child replies.
+
+    const authorHash = authenticated ? "admin" : await createGuestAuthorHash(request, env);
+    if (!authenticated) {
+      const waitSeconds = await remainingGuestWaitSeconds(env.DB, authorHash);
+      if (waitSeconds > 0) {
+        return jsonError("RATE_LIMIT", `发送太频繁了，请 ${waitSeconds} 秒后再试`, 429);
+      }
+    }
+
+    const message = await createMessage(env.DB, messageInput, authorHash, replyToNickname);
+    return json({ message: formatMessage(message, authenticated) }, { status: 201 });
+  }
+
+  if (segments.length === 2 && segments[1] === "approve" && request.method === "POST") {
+    await requireAuth(request, env);
+    const messageId = parsePositiveInteger(segments[0], 0);
+    if (!messageId) {
+      return jsonError("BAD_REQUEST", "留言 ID 不正确", 400);
+    }
+
+    const message = await approveMessage(env.DB, messageId);
+    if (!message) {
+      return jsonError("NOT_FOUND", "留言不存在", 404);
+    }
+
+    return json({ message: formatMessage(message, true) });
+  }
+
+  if (segments.length === 1 && request.method === "DELETE") {
+    await requireAuth(request, env);
+    const messageId = parsePositiveInteger(segments[0], 0);
+    if (!messageId) {
+      return jsonError("BAD_REQUEST", "留言 ID 不正确", 400);
+    }
+
+    const result = await env.DB.prepare("DELETE FROM guestbook_messages WHERE id = ?").bind(messageId).run();
+    if (result.meta.changes === 0) {
+      return jsonError("NOT_FOUND", "留言不存在", 404);
+    }
+
+    return json({ ok: true });
+  }
+
+  return jsonError("METHOD_NOT_ALLOWED", "不支持的留言请求", 405);
+}
+
+/** Returns guestbook messages as a two-level tree. */
+async function listMessages(db: D1Database, includeEmail: boolean) {
+  const where = includeEmail ? "" : "WHERE status = 'approved'";
+  const result = await db
+    .prepare(
+      `
+        SELECT id, parent_id, nickname, email, content, author_hash, reply_to_nickname, status, created_at
+        FROM guestbook_messages
+        ${where}
+        ORDER BY datetime(created_at) ASC, id ASC
+      `
+    )
+    .all<MessageRow>();
+  const roots = new Map<number, ReturnType<typeof formatMessage> & { replies: ReturnType<typeof formatMessage>[] }>();
+
+  for (const row of result.results ?? []) {
+    if (!row.parent_id) {
+      roots.set(row.id, { ...formatMessage(row, includeEmail), replies: [] });
+    }
+  }
+
+  for (const row of result.results ?? []) {
+    if (row.parent_id) {
+      roots.get(row.parent_id)?.replies.push(formatMessage(row, includeEmail));
+    }
+  }
+
+  return Array.from(roots.values()).reverse();
+}
+
+/** Inserts a guestbook message after validation and rate-limit checks. */
+async function createMessage(db: D1Database, input: MessageInput, authorHash: string, replyToNickname = "") {
+  const status = authorHash === "admin" ? "approved" : "pending"; // Guests require administrator approval before public display.
+  const result = await db
+    .prepare(
+      `
+        INSERT INTO guestbook_messages (parent_id, nickname, email, content, author_hash, reply_to_nickname, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        RETURNING id, parent_id, nickname, email, content, author_hash, reply_to_nickname, status, created_at
+      `
+    )
+    .bind(input.parentId, input.nickname, input.email, input.content, authorHash, replyToNickname, status)
+    .first<MessageRow>();
+
+  if (!result) {
+    throw new Error("Failed to create guestbook message");
+  }
+
+  return result;
+}
+
+/** Approves a pending guestbook message for public display. */
+async function approveMessage(db: D1Database, messageId: number) {
+  return db
+    .prepare(
+      `
+        UPDATE guestbook_messages
+        SET status = 'approved'
+        WHERE id = ?
+        RETURNING id, parent_id, nickname, email, content, author_hash, reply_to_nickname, status, created_at
+      `
+    )
+    .bind(messageId)
+    .first<MessageRow>();
+}
+
+/** Finds a message row used as the direct reply target. */
+async function getMessageById(db: D1Database, messageId: number) {
+  return db
+    .prepare("SELECT id, parent_id, nickname, email, content, author_hash, reply_to_nickname, status, created_at FROM guestbook_messages WHERE id = ?")
+    .bind(messageId)
+    .first<MessageRow>();
+}
+
+/** Resolves any reply target into the root parent and optional displayed target nickname. */
+export function normalizeReplyTarget(target: Pick<MessageRow, "id" | "parent_id" | "nickname"> | null) {
+  if (!target) {
+    throw new ApiError("NOT_FOUND", "回复的留言不存在", 404);
+  }
+
+  if (target.parent_id) {
+    return {
+      parentId: target.parent_id,
+      replyToNickname: target.nickname
+    };
+  }
+
+  return {
+    parentId: target.id,
+    replyToNickname: ""
+  };
+}
+
+/** Converts a database row into the public guestbook response shape. */
+function formatMessage(row: MessageRow, includeEmail: boolean) {
+  return {
+    id: row.id,
+    parentId: row.parent_id,
+    nickname: row.nickname,
+    email: includeEmail ? row.email : undefined,
+    content: row.content,
+    replyToNickname: row.reply_to_nickname || undefined,
+    status: row.status,
+    createdAt: row.created_at,
+    replies: []
+  };
+}
+
+async function listArticles(
+  db: D1Database,
+  options: { authenticated: boolean; search: string; tag: string; page: number; limit: number }
+) {
+  const clauses: string[] = [];
+  const bindings: Array<string | number> = [];
+  let joinTag = "";
+
+  if (!options.authenticated) {
+    clauses.push("a.visibility = 'public'");
+  }
+
+  const search = options.search.trim();
+  if (search) {
+    const like = `%${search}%`;
+    clauses.push("(a.title LIKE ? OR a.excerpt LIKE ? OR a.content_md LIKE ?)");
+    bindings.push(like, like, like);
+  }
+
+  const tag = options.tag.trim();
+  if (tag) {
+    joinTag = "JOIN article_tags at_filter ON at_filter.article_id = a.id JOIN tags t_filter ON t_filter.id = at_filter.tag_id";
+    clauses.push("t_filter.slug = ?");
+    bindings.push(tag);
+  }
+
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const countQuery = `
+    SELECT COUNT(DISTINCT a.id) AS total
+    FROM articles a
+    ${joinTag}
+    ${where}
+  `;
+  const query = `
+    SELECT a.id, a.slug, a.title, a.excerpt, a.cover_image_url, a.content_md, a.visibility, a.created_at, a.updated_at
+    FROM articles a
+    ${joinTag}
+    ${where}
+    GROUP BY a.id
+    ORDER BY datetime(a.updated_at) DESC
+    LIMIT ? OFFSET ?
+  `;
+
+  const offset = (options.page - 1) * options.limit; // Rows skipped before the requested page.
+  const countResult = await db.prepare(countQuery).bind(...bindings).first<{ total: number }>();
+  const total = Number(countResult?.total ?? 0); // Total matching articles before pagination.
+  const result = await db.prepare(query).bind(...bindings, options.limit, offset).all<ArticleRow>();
+  const articles = await Promise.all(
+    (result.results ?? []).map(async (row) => {
+      const { content, ...article } = await articleWithTags(db, row, false);
+      const searchSnippet = buildSearchSnippet(row, search); // Visible body match shown during search.
+      return searchSnippet ? { ...article, searchSnippet } : article;
+    })
+  );
+  return {
+    articles,
+    page: options.page,
+    limit: options.limit,
+    total,
+    hasMore: offset + articles.length < total
+  };
+}
+
+async function listTags(db: D1Database, options: { authenticated: boolean; search: string }) {
+  const filters: string[] = [];
+  const bindings: string[] = [];
+
+  if (!options.authenticated) {
+    filters.push("a.visibility = 'public'");
+  }
+
+  const search = options.search.trim();
+  if (search) {
+    const like = `%${search}%`;
+    filters.push("(a.title LIKE ? OR a.excerpt LIKE ? OR a.content_md LIKE ?)");
+    bindings.push(like, like, like);
+  }
+
+  const filteredArticleIds = filters.length
+    ? `
+      SELECT a.id
+      FROM articles a
+      WHERE ${filters.join(" AND ")}
+    `
+    : `
+      SELECT a.id
+      FROM articles a
+    `;
+
+  const result = await db
+    .prepare(
+      `
+        SELECT t.id, t.name, t.slug, COUNT(filtered.id) AS count
+        FROM tags t
+        LEFT JOIN article_tags at ON at.tag_id = t.id
+        LEFT JOIN (${filteredArticleIds}) filtered ON filtered.id = at.article_id
+        GROUP BY t.id
+        HAVING COUNT(filtered.id) > 0
+        ORDER BY lower(t.name)
+      `
+    )
+    .bind(...bindings)
+    .all<TagRow & { count: number }>();
+
+  return result.results ?? [];
+}
+
+async function createArticle(db: D1Database, input: ArticleInput) {
+  const slug = await uniqueSlug(db, timestampSlug());
+  const result = await db
+    .prepare(
+      `
+        INSERT INTO articles (slug, title, excerpt, cover_image_url, content_md, visibility)
+        VALUES (?, ?, ?, ?, ?, ?)
+        RETURNING id, slug, title, excerpt, cover_image_url, content_md, visibility, created_at, updated_at
+      `
+    )
+    .bind(slug, input.title, input.excerpt ?? "", input.coverImageUrl ?? "", input.content, input.visibility)
+    .first<ArticleRow>();
+
+  if (!result) {
+    throw new Error("Failed to create article");
+  }
+
+  await replaceArticleTags(db, result.id, input.tags);
+  await cleanupOrphanedTags(db);
+  return articleWithTags(db, result);
+}
+
+async function updateArticle(db: D1Database, slug: string, input: ArticleInput) {
+  const existing = await getArticleBySlug(db, slug);
+  if (!existing) {
+    return null;
+  }
+
+  const result = await db
+    .prepare(
+      `
+        UPDATE articles
+        SET title = ?, excerpt = ?, cover_image_url = ?, content_md = ?, visibility = ?, updated_at = datetime('now')
+        WHERE slug = ?
+        RETURNING id, slug, title, excerpt, cover_image_url, content_md, visibility, created_at, updated_at
+      `
+    )
+    .bind(input.title, input.excerpt ?? "", input.coverImageUrl ?? "", input.content, input.visibility, slug)
+    .first<ArticleRow>();
+
+  if (!result) {
+    return null;
+  }
+
+  await replaceArticleTags(db, result.id, input.tags);
+  await cleanupOrphanedTags(db);
+  return articleWithTags(db, result);
+}
+
+async function replaceArticleTags(db: D1Database, articleId: number, tagNames: string[]) {
+  const tags = normalizedTags(tagNames);
+  await db.prepare("DELETE FROM article_tags WHERE article_id = ?").bind(articleId).run();
+
+  for (const name of tags) {
+    const slug = slugify(name);
+    const tag =
+      (await db.prepare("SELECT id, name, slug FROM tags WHERE slug = ?").bind(slug).first<TagRow>()) ??
+      (await db
+        .prepare("INSERT INTO tags (name, slug) VALUES (?, ?) RETURNING id, name, slug")
+        .bind(name, slug)
+        .first<TagRow>());
+
+    if (!tag) {
+      throw new Error("Failed to upsert tag");
+    }
+
+    await db.prepare("INSERT OR IGNORE INTO article_tags (article_id, tag_id) VALUES (?, ?)").bind(articleId, tag.id).run();
+  }
+}
+
+/** Removes tag records after their final article association is gone. */
+async function cleanupOrphanedTags(db: D1Database) {
+  await db
+    .prepare(
+      `
+        DELETE FROM tags
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM article_tags at
+          WHERE at.tag_id = tags.id
+        )
+      `
+    )
+    .run();
+}
+
+async function articleWithTags(db: D1Database, row: ArticleRow, includeContent = true) {
+  const tags = await getArticleTags(db, row.id);
+  return {
+    slug: row.slug,
+    title: row.title,
+    excerpt: row.excerpt,
+    coverImageUrl: row.cover_image_url ?? "",
+    content: includeContent ? row.content_md : undefined,
+    visibility: row.visibility,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    tags
+  };
+}
+
+async function getArticleBySlug(db: D1Database, slug: string) {
+  return db
+    .prepare(
+      `
+        SELECT id, slug, title, excerpt, cover_image_url, content_md, visibility, created_at, updated_at
+        FROM articles
+        WHERE slug = ?
+      `
+    )
+    .bind(slug)
+    .first<ArticleRow>();
+}
+
+async function getArticleTags(db: D1Database, articleId: number) {
+  const result = await db
+    .prepare(
+      `
+        SELECT t.id, t.name, t.slug
+        FROM tags t
+        JOIN article_tags at ON at.tag_id = t.id
+        WHERE at.article_id = ?
+        ORDER BY lower(t.name)
+      `
+    )
+    .bind(articleId)
+    .all<TagRow>();
+
+  return result.results ?? [];
+}
+
+async function uniqueSlug(db: D1Database, baseSlug: string) {
+  const base = baseSlug || "article";
+  let candidate = base;
+  let index = 2;
+
+  while (await getArticleBySlug(db, candidate)) {
+    candidate = `${base}-${index}`;
+    index += 1;
+  }
+
+  return candidate;
+}
+
+/** Creates a timestamp-based slug for newly published articles. */
+export function timestampSlug(date = new Date()) {
+  return String(date.getTime());
+}
+
+/** Builds a short body snippet when a search match is hidden from the list card. */
+export function buildSearchSnippet(row: SearchSnippetRow, search: string) {
+  const query = search.trim(); // Raw search phrase typed by the visitor.
+  if (!query || containsIgnoreCase(row.title, query) || containsIgnoreCase(row.excerpt, query)) {
+    return "";
+  }
+
+  const bodyText = markdownToPlainText(row.content_md); // Markdown body converted to readable preview text.
+  if (!containsIgnoreCase(bodyText, query)) {
+    return "";
+  }
+
+  return snippetAroundMatch(bodyText, query);
+}
+
+/** Removes common Markdown syntax while preserving the words users expect to search. */
+function markdownToPlainText(markdown: string) {
+  return markdown
+    .replace(/```[\s\S]*?```/g, (block) => block.replace(/```[^\n]*\n?/g, "").replace(/```/g, ""))
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^>\s?/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    .replace(/[*_~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Checks text with case-insensitive matching for search and highlight decisions. */
+function containsIgnoreCase(value: string, query: string) {
+  return value.toLowerCase().includes(query.toLowerCase());
+}
+
+/** Crops text around the first matching search phrase. */
+function snippetAroundMatch(text: string, query: string) {
+  const lowerText = text.toLowerCase(); // Lowercase body text for stable matching.
+  const lowerQuery = query.toLowerCase(); // Lowercase search phrase for stable matching.
+  const matchIndex = lowerText.indexOf(lowerQuery);
+  const contextBefore = 36; // Characters kept before the matched phrase.
+  const contextAfter = 72; // Characters kept after the matched phrase.
+  const start = Math.max(0, matchIndex - contextBefore);
+  const end = Math.min(text.length, matchIndex + query.length + contextAfter);
+  const prefix = start > 0 ? "..." : "";
+  const suffix = end < text.length ? "..." : "";
+
+  return `${prefix}${text.slice(start, end)}${suffix}`;
+}
+
+export function validateArticleInput(raw: Partial<ArticleInput>): ArticleInput {
+  const title = String(raw.title ?? "").trim();
+  const content = String(raw.content ?? "").trim();
+  const excerpt = String(raw.excerpt ?? "").trim();
+  const coverImageUrl = String(raw.coverImageUrl ?? "").trim();
+  const visibility = raw.visibility === "private" ? "private" : "public";
+  const tags = Array.isArray(raw.tags) ? raw.tags.map(String) : [];
+
+  if (title.length < 1 || title.length > 120) {
+    throw new ApiError("BAD_REQUEST", "标题长度需要在 1 到 120 个字符之间", 400);
+  }
+
+  if (content.length < 1) {
+    throw new ApiError("BAD_REQUEST", "文章内容不能为空", 400);
+  }
+
+  if (excerpt.length > 240) {
+    throw new ApiError("BAD_REQUEST", "摘要不能超过 240 个字符", 400);
+  }
+
+  if (coverImageUrl.length > 2048) {
+    throw new ApiError("BAD_REQUEST", "图片 URL 不能超过 2048 个字符", 400);
+  }
+
+  return {
+    title,
+    content,
+    excerpt,
+    coverImageUrl,
+    visibility,
+    tags: normalizedTags(tags)
+  };
+}
+
+/** Validates and normalizes message form input for guests and administrators. */
+export function validateMessageInput(raw: Partial<MessageInput>, authenticated: boolean): MessageInput {
+  const nickname = authenticated ? adminMessageNickname : String(raw.nickname ?? "").trim();
+  const email = authenticated ? String(raw.email ?? "").trim() : String(raw.email ?? "").trim();
+  const content = String(raw.content ?? "").trim();
+  const parentId = raw.parentId ? Number(raw.parentId) : null;
+  const captchaToken = String(raw.captchaToken ?? "");
+  const captchaAnswer = String(raw.captchaAnswer ?? "").trim();
+
+  if (!nickname || nickname.length > messageNicknameMaxLength) {
+    throw new ApiError("BAD_REQUEST", `昵称需要在 1 到 ${messageNicknameMaxLength} 个字符之间`, 400);
+  }
+
+  if (!authenticated && !email) {
+    throw new ApiError("BAD_REQUEST", "邮箱不能为空", 400);
+  }
+
+  if (email.length > messageEmailMaxLength || (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+    throw new ApiError("BAD_REQUEST", "邮箱格式不正确", 400);
+  }
+
+  if (!content || content.length > messageContentMaxLength) {
+    throw new ApiError("BAD_REQUEST", `留言内容需要在 1 到 ${messageContentMaxLength} 个字符之间`, 400);
+  }
+
+  if (parentId !== null && (!Number.isInteger(parentId) || parentId <= 0)) {
+    throw new ApiError("BAD_REQUEST", "回复目标不正确", 400);
+  }
+
+  if (!authenticated && (!captchaToken || !captchaAnswer)) {
+    throw new ApiError("BAD_REQUEST", "验证码不能为空", 400);
+  }
+
+  return {
+    nickname,
+    email,
+    content,
+    parentId,
+    captchaToken,
+    captchaAnswer
+  };
+}
+
+/** Creates a signed arithmetic captcha challenge for guestbook guests. */
+async function createGuestbookCaptcha(secret: string) {
+  const operands = createCaptchaOperands();
+  const answer = operands.left + operands.right; // Correct captcha answer.
+  const expiresAt = Date.now() + messageCaptchaTtlMs; // Absolute timestamp when the captcha expires.
+  const payload = encodePayload({ answer, expiresAt });
+  const signature = await sign(payload, secret);
+  return {
+    question: `${operands.left} + ${operands.right} = ?`,
+    token: `${payload}.${signature}`,
+    expiresAt
+  };
+}
+
+/** Creates bounded captcha numbers that remain easy to solve on mobile. */
+export function createCaptchaOperands(): CaptchaOperands {
+  const left = Math.floor(Math.random() * 8) + 2; // Left operand between 2 and 9.
+  const right = Math.floor(Math.random() * 8) + 2; // Right operand between 2 and 9.
+  return { left, right };
+}
+
+/** Verifies a signed arithmetic captcha token and submitted answer. */
+export async function verifyGuestbookCaptcha(secret: string, token: string, answer: string, now = Date.now()) {
+  const [payload, signature] = token.split(".");
+  if (!payload || !signature) {
+    return false;
+  }
+
+  const expected = await sign(payload, secret);
+  if (!safeEqual(signature, expected)) {
+    return false;
+  }
+
+  const captcha = decodeCaptchaPayload(payload);
+  return Boolean(captcha && captcha.expiresAt >= now && safeEqual(String(captcha.answer), answer.trim()));
+}
+
+/** Decodes captcha payloads without trusting malformed visitor input. */
+function decodeCaptchaPayload(payload: string): { answer: number; expiresAt: number } | null {
+  try {
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
+    const data = JSON.parse(atob(padded));
+    return {
+      answer: Number(data.answer ?? Number.NaN),
+      expiresAt: Number(data.expiresAt ?? 0)
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Returns a stable hash for guest rate limiting without storing the raw IP address. */
+async function createGuestAuthorHash(request: Request, env: Env) {
+  const ip = request.headers.get("CF-Connecting-IP") ?? request.headers.get("X-Forwarded-For") ?? "unknown";
+  return sign(`guestbook:${ip}`, env.SESSION_SECRET);
+}
+
+/** Calculates how many seconds remain before a guest may post again. */
+async function remainingGuestWaitSeconds(db: D1Database, authorHash: string) {
+  const latest = await db
+    .prepare(
+      `
+        SELECT created_at
+        FROM guestbook_messages
+        WHERE author_hash = ?
+        ORDER BY datetime(created_at) DESC
+        LIMIT 1
+      `
+    )
+    .bind(authorHash)
+    .first<{ created_at: string }>();
+
+  if (!latest?.created_at) {
+    return 0;
+  }
+
+  return remainingCooldownSeconds(new Date(`${latest.created_at}Z`).getTime(), Date.now());
+}
+
+/** Calculates the front-end and back-end cooldown from two timestamps. */
+export function remainingCooldownSeconds(lastCreatedAt: number, now: number) {
+  const elapsedSeconds = Math.floor((now - lastCreatedAt) / 1000);
+  return Math.max(0, guestMessageIntervalSeconds - elapsedSeconds);
+}
+
+export function normalizedTags(tags: string[]) {
+  return Array.from(new Set(tags.map((tag) => tag.trim()).filter(Boolean))).slice(0, 12);
+}
+
+export function slugify(value: string) {
+  const normalized = value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return normalized || "article";
+}
+
+async function readJson<T>(request: Request): Promise<T> {
+  try {
+    return (await request.json()) as T;
+  } catch {
+    throw new ApiError("BAD_REQUEST", "请求体必须是合法 JSON", 400);
+  }
+}
+
+async function requireAuth(request: Request, env: Env) {
+  if (!(await isAuthenticated(request, env))) {
+    throw new ApiError("FORBIDDEN", "请先登录", 403);
+  }
+}
+
+async function isAuthenticated(request: Request, env: Env) {
+  const cookie = getCookie(request, sessionCookieName);
+  if (!cookie) {
+    return false;
+  }
+
+  const [payload, signature] = cookie.split(".");
+  if (!payload || !signature) {
+    return false;
+  }
+
+  const expected = await sign(payload, env.SESSION_SECRET);
+  if (!safeEqual(signature, expected)) {
+    return false;
+  }
+
+  const session = decodePayload(payload);
+  return Boolean(session?.username === env.ADMIN_USERNAME && session.expiresAt > Date.now());
+}
+
+async function createSessionCookie(request: Request, env: Env) {
+  const payload = encodePayload({
+    username: env.ADMIN_USERNAME,
+    expiresAt: Date.now() + oneWeekSeconds * 1000
+  });
+  const signature = await sign(payload, env.SESSION_SECRET);
+  return `${sessionCookieName}=${payload}.${signature}; ${cookieAttributes(request)} Max-Age=${oneWeekSeconds}`;
+}
+
+function cookieAttributes(request: Request) {
+  const url = new URL(request.url);
+  const secure = url.protocol === "https:" ? "Secure; " : "";
+  return `HttpOnly; ${secure}SameSite=Lax; Path=/;`;
+}
+
+function encodePayload(value: Record<string, unknown>) {
+  return btoa(JSON.stringify(value)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function decodePayload(payload: string): { username: string; expiresAt: number } | null {
+  try {
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
+    const data = JSON.parse(atob(padded));
+    return {
+      username: String(data.username ?? ""),
+      expiresAt: Number(data.expiresAt ?? 0)
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function sign(value: string, secret: string) {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(value));
+  return base64Url(new Uint8Array(signature));
+}
+
+function base64Url(bytes: Uint8Array) {
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function getCookie(request: Request, name: string) {
+  const cookieHeader = request.headers.get("Cookie") ?? "";
+  const cookies = cookieHeader.split(";").map((part) => part.trim());
+
+  for (const cookie of cookies) {
+    const [key, ...value] = cookie.split("=");
+    if (key === name) {
+      return value.join("=");
+    }
+  }
+
+  return "";
+}
+
+function decodePathSegment(segment: string) {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    throw new ApiError("BAD_REQUEST", "URL 路径格式不正确", 400);
+  }
+}
+
+/** Parses positive integer query params with a safe fallback. */
+function parsePositiveInteger(value: string | null, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function safeEqual(a: string, b: string) {
+  if (a.length !== b.length) {
+    return false;
+  }
+
+  let result = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+
+  return result === 0;
+}
+
+function json(data: unknown, init: ResponseInit = {}) {
+  return new Response(JSON.stringify(data), {
+    ...init,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      ...init.headers
+    }
+  });
+}
+
+function jsonError(code: ApiErrorCode, message: string, status: number) {
+  return json({ error: { code, message } }, { status });
+}
+
+class ApiError extends Error {
+  readonly code: ApiErrorCode;
+  readonly status: number;
+
+  constructor(code: ApiErrorCode, message: string, status: number) {
+    super(message);
+    this.code = code;
+    this.status = status;
+  }
+}

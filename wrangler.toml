@@ -1,0 +1,8 @@
+name = "cloudflare-blog"
+compatibility_date = "2026-05-19"
+pages_build_output_dir = "dist"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cloudflare_blog"
+database_id = "6693e85b-b46f-48db-927c-46703d22d864"

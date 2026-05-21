@@ -1,0 +1,41 @@
+{
+  "name": "cloudflare-personal-blog",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "cf:dev": "wrangler pages dev dist --compatibility-date=2026-05-19",
+    "db:migrate:local": "wrangler d1 migrations apply cloudflare_blog --local",
+    "db:migrate:remote": "wrangler d1 migrations apply cloudflare_blog --remote",
+    "db:seed:local": "wrangler d1 execute cloudflare_blog --local --file ./scripts/seed-local.sql",
+    "typecheck:functions": "tsc --noEmit -p tsconfig.functions.json",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.1.1",
+    "clsx": "^2.1.1",
+    "github-markdown-css": "^5.8.1",
+    "lucide-react": "^0.561.0",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "rehype-sanitize": "^6.0.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260519.0",
+    "@playwright/test": "^1.57.0",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.7",
+    "vitest": "^4.0.16",
+    "wrangler": "^4.53.0"
+  }
+}

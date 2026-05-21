@@ -1,0 +1,126 @@
+import type {
+  ApiErrorPayload,
+  Article,
+  ArticleInput,
+  ArticleListResponse,
+  ArticleSearchResponse,
+  GuestbookCaptcha,
+  GuestbookInput,
+  GuestbookMessage,
+  Tag
+} from "./types";
+
+async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const response = await fetch(path, {
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...init.headers
+    },
+    ...init
+  });
+
+  const data = (await response.json().catch(() => ({}))) as unknown;
+
+  if (!response.ok) {
+    const payload = data as ApiErrorPayload;
+    const message =
+      typeof data === "object" && data !== null && payload.error?.message ? payload.error.message : "请求失败";
+    throw new Error(message);
+  }
+
+  return data as T;
+}
+
+export async function getMe() {
+  return requestJson<{ authenticated: boolean }>("/api/auth/me");
+}
+
+export async function login(username: string, password: string) {
+  return requestJson<{ authenticated: boolean }>("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password })
+  });
+}
+
+export async function logout() {
+  return requestJson<{ authenticated: boolean }>("/api/auth/logout", {
+    method: "POST"
+  });
+}
+
+export async function listArticles(params: { page?: number; search?: string; tag?: string }) {
+  const searchParams = new URLSearchParams();
+  if (params.page) searchParams.set("page", String(params.page));
+  if (params.search) searchParams.set("search", params.search);
+  if (params.tag) searchParams.set("tag", params.tag);
+  const query = searchParams.toString();
+  return requestJson<ArticleListResponse>(`/api/articles${query ? `?${query}` : ""}`);
+}
+
+export async function searchArticles(params: { page?: number; search?: string; tag?: string }) {
+  const searchParams = new URLSearchParams();
+  if (params.page) searchParams.set("page", String(params.page));
+  if (params.search) searchParams.set("search", params.search);
+  if (params.tag) searchParams.set("tag", params.tag);
+  const query = searchParams.toString();
+  return requestJson<ArticleSearchResponse>(`/api/article-search${query ? `?${query}` : ""}`);
+}
+
+export async function listTags(params: { search?: string } = {}) {
+  const searchParams = new URLSearchParams();
+  if (params.search) searchParams.set("search", params.search);
+  const query = searchParams.toString();
+  return requestJson<{ tags: Tag[] }>(`/api/tags${query ? `?${query}` : ""}`);
+}
+
+export async function getArticle(slug: string) {
+  return requestJson<{ article: Article }>(`/api/articles/${encodeURIComponent(slug)}`);
+}
+
+export async function createArticle(input: ArticleInput) {
+  return requestJson<{ article: Article }>("/api/articles", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function updateArticle(slug: string, input: ArticleInput) {
+  return requestJson<{ article: Article }>(`/api/articles/${encodeURIComponent(slug)}`, {
+    method: "PUT",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function deleteArticle(slug: string) {
+  return requestJson<{ ok: boolean }>(`/api/articles/${encodeURIComponent(slug)}`, {
+    method: "DELETE"
+  });
+}
+
+export async function listMessages() {
+  return requestJson<{ messages: GuestbookMessage[] }>("/api/messages");
+}
+
+export async function getMessageCaptcha() {
+  return requestJson<{ captcha: GuestbookCaptcha }>("/api/messages/captcha");
+}
+
+export async function createMessage(input: GuestbookInput) {
+  return requestJson<{ message: GuestbookMessage }>("/api/messages", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function approveMessage(id: number) {
+  return requestJson<{ message: GuestbookMessage }>(`/api/messages/${id}/approve`, {
+    method: "POST"
+  });
+}
+
+export async function deleteMessage(id: number) {
+  return requestJson<{ ok: boolean }>(`/api/messages/${id}`, {
+    method: "DELETE"
+  });
+}
