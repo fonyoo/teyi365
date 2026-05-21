@@ -68,6 +68,12 @@ interface CaptchaOperands {
 
 type MessageStatus = "pending" | "approved";
 
+interface AuthConfig {
+  username: string;
+  password: string;
+  sessionSecret: string;
+}
+
 type ApiErrorCode =
   | "BAD_REQUEST"
   | "UNAUTHORIZED"
@@ -137,15 +143,20 @@ async function handleAuth(context: EventContext<Env, string, unknown>, segments:
   }
 
   if (action === "login" && request.method === "POST") {
+    const authConfig = getAuthConfig(env);
+    if (!authConfig) {
+      return jsonError("SERVER_ERROR", "管理员登录配置未完成，请检查 Cloudflare Pages 环境变量", 500);
+    }
+
     const body = await readJson<{ username?: string; password?: string }>(request);
     const username = String(body.username ?? "");
     const password = String(body.password ?? "");
 
-    if (!safeEqual(username, env.ADMIN_USERNAME) || !safeEqual(password, env.ADMIN_PASSWORD)) {
+    if (!safeEqual(username, authConfig.username) || !safeEqual(password, authConfig.password)) {
       return jsonError("UNAUTHORIZED", "用户名或密码不正确", 401);
     }
 
-    const cookie = await createSessionCookie(request, env);
+    const cookie = await createSessionCookie(request, authConfig);
     return json(
       { authenticated: true },
       {
@@ -947,7 +958,28 @@ async function requireAuth(request: Request, env: Env) {
   }
 }
 
+function getAuthConfig(env: Env): AuthConfig | null {
+  const username = String(env.ADMIN_USERNAME ?? "");
+  const password = String(env.ADMIN_PASSWORD ?? "");
+  const sessionSecret = String(env.SESSION_SECRET ?? "");
+
+  if (!username || !password || !sessionSecret) {
+    return null;
+  }
+
+  return {
+    username,
+    password,
+    sessionSecret
+  };
+}
+
 async function isAuthenticated(request: Request, env: Env) {
+  const authConfig = getAuthConfig(env);
+  if (!authConfig) {
+    return false;
+  }
+
   const cookie = getCookie(request, sessionCookieName);
   if (!cookie) {
     return false;
@@ -958,21 +990,21 @@ async function isAuthenticated(request: Request, env: Env) {
     return false;
   }
 
-  const expected = await sign(payload, env.SESSION_SECRET);
+  const expected = await sign(payload, authConfig.sessionSecret);
   if (!safeEqual(signature, expected)) {
     return false;
   }
 
   const session = decodePayload(payload);
-  return Boolean(session?.username === env.ADMIN_USERNAME && session.expiresAt > Date.now());
+  return Boolean(session?.username === authConfig.username && session.expiresAt > Date.now());
 }
 
-async function createSessionCookie(request: Request, env: Env) {
+async function createSessionCookie(request: Request, authConfig: AuthConfig) {
   const payload = encodePayload({
-    username: env.ADMIN_USERNAME,
+    username: authConfig.username,
     expiresAt: Date.now() + oneWeekSeconds * 1000
   });
-  const signature = await sign(payload, env.SESSION_SECRET);
+  const signature = await sign(payload, authConfig.sessionSecret);
   return `${sessionCookieName}=${payload}.${signature}; ${cookieAttributes(request)} Max-Age=${oneWeekSeconds}`;
 }
 
