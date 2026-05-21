@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
-import rehypeSanitize from "rehype-sanitize";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import {
   ArrowLeft,
@@ -49,6 +50,7 @@ import type {
   Visibility
 } from "./types";
 import { articleToInput, emptyArticleInput, formatArticleTimeTitle, formatDate, sampleMarkdown } from "./utils";
+import type { Options as RehypeSanitizeOptions } from "rehype-sanitize";
 
 type View = "list" | "article" | "editor" | "guestbook";
 const firstArticlePage = 1; // Initial article list page.
@@ -57,6 +59,11 @@ const guestbookPath = "/guestbook"; // Shareable path for the guestbook page.
 const searchDebounceMs = 650; // Delay before querying as the visitor types.
 const minAutoSearchLength = 2; // One-character input stays local to save Cloudflare requests.
 const guestbookCooldownKey = "guestbook:lastSentAt"; // Local storage key for client-side guest cooldown.
+
+const markdownSanitizeSchema: RehypeSanitizeOptions = {
+  ...defaultSchema,
+  tagNames: Array.from(new Set([...(defaultSchema.tagNames ?? []), "kbd", "mark"]))
+};
 const guestbookCooldownSeconds = 120; // Seconds a guest must wait before sending again.
 const defaultGuestbookDraft: GuestbookInput = {
   nickname: "",
@@ -1090,11 +1097,11 @@ function ArticleView(props: {
   );
 }
 
-function MarkdownRenderer(props: { content: string }) {
+export function MarkdownRenderer(props: { content: string }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={[rehypeSanitize, [rehypeHighlight, { detect: true }]]}
+      remarkPlugins={[remarkGfm, remarkDoubleEqualsMark]}
+      rehypePlugins={[rehypeRaw, [rehypeSanitize, markdownSanitizeSchema], [rehypeHighlight, { detect: true }]]}
       components={{
         pre: ({ children }) => <CodeBlock>{children}</CodeBlock>
       }}
@@ -1102,6 +1109,87 @@ function MarkdownRenderer(props: { content: string }) {
       {props.content}
     </ReactMarkdown>
   );
+}
+
+interface MarkdownParentNode {
+  children?: MarkdownNode[];
+}
+
+interface MarkdownTextNode {
+  type: "text";
+  value: string;
+}
+
+interface MarkdownHtmlNode {
+  type: "html";
+  value: string;
+}
+
+type MarkdownNode = MarkdownParentNode | MarkdownTextNode | MarkdownHtmlNode;
+
+function remarkDoubleEqualsMark() {
+  return (tree: MarkdownParentNode) => {
+    visitMarkdownText(tree, (node, index, parent) => {
+      const replacement = splitDoubleEqualsMark(node.value);
+      if (replacement.length <= 1) {
+        return;
+      }
+
+      parent.children?.splice(index, 1, ...replacement);
+    });
+  };
+}
+
+function visitMarkdownText(
+  node: MarkdownNode,
+  visitor: (node: MarkdownTextNode, index: number, parent: MarkdownParentNode) => void
+) {
+  if (!("children" in node) || !node.children) {
+    return;
+  }
+
+  for (let index = node.children.length - 1; index >= 0; index -= 1) {
+    const child = node.children[index];
+    if (isMarkdownTextNode(child)) {
+      visitor(child, index, node);
+    } else {
+      visitMarkdownText(child, visitor);
+    }
+  }
+}
+
+function splitDoubleEqualsMark(value: string): Array<MarkdownTextNode | MarkdownHtmlNode> {
+  const nodes: Array<MarkdownTextNode | MarkdownHtmlNode> = [];
+  const pattern = /==([^=\n](?:.*?[^=\n])?)==/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(value))) {
+    if (match.index > cursor) {
+      nodes.push({ type: "text", value: value.slice(cursor, match.index) });
+    }
+
+    nodes.push({ type: "html", value: `<mark>${escapeHtml(match[1])}</mark>` });
+    cursor = match.index + match[0].length;
+  }
+
+  if (cursor < value.length) {
+    nodes.push({ type: "text", value: value.slice(cursor) });
+  }
+
+  return nodes.length ? nodes : [{ type: "text", value }];
+}
+
+function isMarkdownTextNode(node: MarkdownNode): node is MarkdownTextNode {
+  return "type" in node && node.type === "text" && "value" in node;
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function CodeBlock(props: { children: React.ReactNode }) {

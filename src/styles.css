@@ -769,6 +769,29 @@ button {
   border-bottom: 0;
 }
 
+.markdown-body mark {
+  border-radius: 3px;
+  padding: 0.08em 0.22em;
+  background: #fff59d;
+  color: #24292f;
+}
+
+.markdown-body kbd {
+  margin: 0 0.1em;
+  border: 1px solid rgb(173 179 185);
+  border-radius: 3px;
+  padding: 0.1em 0.6em;
+  background: rgb(255 255 255);
+  color: rgb(36 39 41);
+  font-size: 0.8em;
+  line-height: 1.4;
+  white-space: nowrap;
+  vertical-align: middle;
+  box-shadow:
+    rgb(255 255 255) 0 0 0 2px inset,
+    rgb(12 13 14 / 20%) 0 1px;
+}
+
 .markdown-body .contains-task-list {
   padding-left: 0;
 }

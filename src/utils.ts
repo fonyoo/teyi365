@@ -65,7 +65,7 @@ export function articleToInput(article: {
 export function sampleMarkdown() {
   return `# 新文章标题
 
-这里写正文。支持 **粗体**、链接、任务列表、表格和代码块。
+这里写正文。支持 **粗体**、链接、任务列表、表格、代码块、==高亮文本== 和 <kbd>Ctrl</kbd> 键。
 
 ## 待办
 
