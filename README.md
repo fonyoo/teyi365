@@ -4,43 +4,111 @@
 
 ## 本地开发
 
-先安装依赖：
+### 第一次启动
 
-```bash
-pnpm install
-```
+第一次拉取项目，或者换一台新电脑开发时，按下面顺序执行。
 
-准备本地环境变量。如果仓库里没有 `.dev.vars`，复制示例文件：
+1. 进入项目目录：
 
-```bash
-cp .dev.vars.example .dev.vars
-```
+   ```bash
+   cd D:\webCode\cloudflare-blog\html-md-reader-main
+   ```
 
-`.dev.vars` 用于本地调试，包含：
+2. 安装依赖：
 
-```env
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=change-me
-SESSION_SECRET=change-me-to-a-long-random-string
-```
+   ```bash
+   pnpm install
+   ```
 
-这几个默认值只适合本地临时调试。线上一定要在 Cloudflare Pages 里配置真实值，不要让线上继续使用 `change-me`。
+3. 准备本地环境变量。如果仓库里已经有 `.dev.vars`，可以跳过这一步；如果没有，就复制示例文件：
 
-初始化本地 D1 数据库并写入示例文章：
+   ```bash
+   cp .dev.vars.example .dev.vars
+   ```
 
-```bash
-pnpm db:migrate:local
-pnpm db:seed:local
-```
+   Windows PowerShell 也可以使用：
 
-构建并启动 Cloudflare Pages 本地预览：
+   ```powershell
+   Copy-Item .dev.vars.example .dev.vars
+   ```
+
+4. 检查 `.dev.vars`。本地调试可以先使用默认值：
+
+   ```env
+   ADMIN_USERNAME=admin
+   ADMIN_PASSWORD=change-me
+   SESSION_SECRET=change-me-to-a-long-random-string
+   ```
+
+   这几个默认值只适合本地临时调试。线上一定要在 Cloudflare Pages 里配置真实值，不要让线上继续使用 `change-me`。
+
+5. 初始化本地 D1 数据库表结构：
+
+   ```bash
+   pnpm db:migrate:local
+   ```
+
+6. 写入本地示例文章。只需要第一次执行；如果以后不想重复插入示例数据，就不要再执行这一条：
+
+   ```bash
+   pnpm db:seed:local
+   ```
+
+7. 构建前端：
+
+   ```bash
+   pnpm build
+   ```
+
+8. 启动 Cloudflare Pages 本地预览：
+
+   ```bash
+   pnpm cf:dev
+   ```
+
+打开 Wrangler 输出的本地地址即可访问。
+
+### 第二次及以后启动
+
+如果依赖、数据库迁移和环境变量都已经准备过，日常启动只需要：
 
 ```bash
 pnpm build
 pnpm cf:dev
 ```
 
-打开 Wrangler 输出的本地地址即可访问。
+如果只是改前端页面，不需要 Pages Functions 和 D1，也可以用更快的 Vite 开发服务器：
+
+```bash
+pnpm dev
+```
+
+不过博客的登录、文章接口、留言和 D1 数据库依赖 Cloudflare Pages Functions，完整调试还是推荐使用：
+
+```bash
+pnpm build
+pnpm cf:dev
+```
+
+### 什么时候需要重新执行其他命令
+
+拉取代码后，如果 `package.json` 或 `pnpm-lock.yaml` 有变化，重新安装依赖：
+
+```bash
+pnpm install
+```
+
+拉取代码后，如果 `migrations/` 里新增了数据库迁移文件，更新本地 D1 表结构：
+
+```bash
+pnpm db:migrate:local
+```
+
+如果想重置本地示例数据，先清理本地 D1 数据，再重新执行：
+
+```bash
+pnpm db:seed:local
+```
 
 ## Cloudflare 线上部署
 
