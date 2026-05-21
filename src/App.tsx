@@ -116,13 +116,27 @@ export function App() {
   const [guestbookReplyTarget, setGuestbookReplyTarget] = useState<GuestbookMessage | null>(null);
   const [guestbookLoading, setGuestbookLoading] = useState(false);
   const [guestbookSubmitting, setGuestbookSubmitting] = useState(false);
+  const [guestbookCaptchaRefreshing, setGuestbookCaptchaRefreshing] = useState(false);
+  const [guestbookAction, setGuestbookAction] = useState("");
   const [guestbookCooldown, setGuestbookCooldown] = useState(0);
+  const [articleSubmitting, setArticleSubmitting] = useState(false);
+  const [articleDeleting, setArticleDeleting] = useState(false);
+  const [editingArticleSlug, setEditingArticleSlug] = useState("");
+  const [routeAction, setRouteAction] = useState("");
+  const [authAction, setAuthAction] = useState("");
   const [message, setMessage] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const articleRequestId = useRef(0);
   const articleSearchEffectReady = useRef(false);
   const listScrollY = useRef(0);
+  const articleSubmittingRef = useRef(false);
+  const articleDeletingRef = useRef(false);
+  const guestbookSubmittingRef = useRef(false);
+  const guestbookActionRef = useRef("");
+  const guestbookCaptchaRefreshingRef = useRef(false);
+  const routeActionRef = useRef("");
+  const authActionRef = useRef("");
 
   useEffect(() => {
     void bootstrap();
@@ -326,8 +340,16 @@ export function App() {
   }
 
   async function openArticle(slug: string) {
+    if (routeActionRef.current) {
+      return;
+    }
+
     listScrollY.current = window.scrollY;
+    routeActionRef.current = `article-${slug}`;
+    setRouteAction(routeActionRef.current);
     await loadArticle(slug, true);
+    routeActionRef.current = "";
+    setRouteAction("");
   }
 
   /** Loads an article and moves the single-page app into article view. */
@@ -367,6 +389,12 @@ export function App() {
 
   /** Opens the shareable guestbook view and refreshes its current messages. */
   async function showGuestbook(pushUrl = true) {
+    if (routeActionRef.current) {
+      return;
+    }
+
+    routeActionRef.current = "guestbook";
+    setRouteAction("guestbook");
     setActiveArticle(null);
     setEditingSlug(null);
     setView("guestbook");
@@ -375,13 +403,26 @@ export function App() {
     }
     window.scrollTo({ top: 0, behavior: "smooth" });
     await refreshGuestbook();
+    routeActionRef.current = "";
+    setRouteAction("");
   }
 
   function newArticle() {
+    if (routeActionRef.current) {
+      return;
+    }
+
+    routeActionRef.current = "new-article";
+    setRouteAction("new-article");
     setEditingSlug(null);
     setDraft({ ...emptyArticleInput, content: sampleMarkdown() });
     setActiveArticle(null);
-    void refreshTagOptions();
+    void refreshTagOptions()
+      .catch((caught) => setError(asErrorMessage(caught)))
+      .finally(() => {
+        routeActionRef.current = "";
+        setRouteAction("");
+      });
     setView("editor");
     if (window.location.pathname !== "/") {
       window.history.pushState(null, "", "/");
@@ -390,8 +431,13 @@ export function App() {
   }
 
   async function editArticle(slug: string) {
+    if (editingArticleSlug) {
+      return;
+    }
+
     setError("");
     setLoading(true);
+    setEditingArticleSlug(slug);
     try {
       const result = await getArticle(slug);
       setEditingSlug(slug);
@@ -407,11 +453,18 @@ export function App() {
       setError(asErrorMessage(caught));
     } finally {
       setLoading(false);
+      setEditingArticleSlug("");
     }
   }
 
   async function submitDraft(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (articleSubmittingRef.current) {
+      return;
+    }
+
+    articleSubmittingRef.current = true;
+    setArticleSubmitting(true);
     setError("");
     setMessage("");
 
@@ -426,14 +479,23 @@ export function App() {
       await refreshContent();
     } catch (caught) {
       setError(asErrorMessage(caught));
+    } finally {
+      articleSubmittingRef.current = false;
+      setArticleSubmitting(false);
     }
   }
 
   async function removeArticle(slug: string) {
+    if (articleDeletingRef.current) {
+      return;
+    }
+
     if (!window.confirm("确定删除这篇文章吗？")) {
       return;
     }
 
+    articleDeletingRef.current = true;
+    setArticleDeleting(true);
     setError("");
     try {
       await deleteArticle(slug);
@@ -443,6 +505,9 @@ export function App() {
       await refreshContent();
     } catch (caught) {
       setError(asErrorMessage(caught));
+    } finally {
+      articleDeletingRef.current = false;
+      setArticleDeleting(false);
     }
   }
 
@@ -456,14 +521,27 @@ export function App() {
   }
 
   async function handleLogout() {
+    if (authActionRef.current) {
+      return;
+    }
+
+    authActionRef.current = "logout";
+    setAuthAction("logout");
     setError("");
-    await logout();
-    setAuthenticated(false);
-    setActiveArticle(null);
-    setEditingSlug(null);
-    showList();
-    setMessage("已退出登录");
-    await refreshContent();
+    try {
+      await logout();
+      setAuthenticated(false);
+      setActiveArticle(null);
+      setEditingSlug(null);
+      showList();
+      setMessage("已退出登录");
+      await refreshContent();
+    } catch (caught) {
+      setError(asErrorMessage(caught));
+    } finally {
+      authActionRef.current = "";
+      setAuthAction("");
+    }
   }
 
   /** Reloads guestbook messages and prepares captcha state for the current viewer. */
@@ -489,22 +567,31 @@ export function App() {
 
   /** Requests a fresh captcha for guests after initial load or failed submission. */
   async function refreshGuestbookCaptcha() {
-    if (authenticated) {
+    if (authenticated || guestbookCaptchaRefreshingRef.current) {
       return;
     }
 
+    guestbookCaptchaRefreshingRef.current = true;
+    setGuestbookCaptchaRefreshing(true);
     try {
       const result = await getMessageCaptcha();
       setGuestbookCaptcha(result.captcha);
       setGuestbookDraft((currentDraft) => ({ ...currentDraft, captchaToken: result.captcha.token, captchaAnswer: "" }));
     } catch (caught) {
       setError(asErrorMessage(caught));
+    } finally {
+      guestbookCaptchaRefreshingRef.current = false;
+      setGuestbookCaptchaRefreshing(false);
     }
   }
 
   /** Sends a guestbook message or top-level reply from the shared form. */
   async function submitGuestbookMessage(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (guestbookSubmittingRef.current) {
+      return;
+    }
+
     setError("");
     setMessage("");
 
@@ -513,6 +600,7 @@ export function App() {
       return;
     }
 
+    guestbookSubmittingRef.current = true;
     setGuestbookSubmitting(true);
     try {
       const input = {
@@ -538,16 +626,24 @@ export function App() {
       setError(asErrorMessage(caught));
       await refreshGuestbookCaptcha();
     } finally {
+      guestbookSubmittingRef.current = false;
       setGuestbookSubmitting(false);
     }
   }
 
   /** Deletes a guestbook message after administrator confirmation. */
   async function removeGuestbookMessage(id: number) {
+    if (guestbookActionRef.current) {
+      return;
+    }
+
     if (!window.confirm("确定删除这条留言吗？")) {
       return;
     }
 
+    const actionKey = `delete-${id}`;
+    guestbookActionRef.current = actionKey;
+    setGuestbookAction(actionKey);
     setError("");
     try {
       await deleteMessage(id);
@@ -555,11 +651,21 @@ export function App() {
       await refreshGuestbook();
     } catch (caught) {
       setError(asErrorMessage(caught));
+    } finally {
+      guestbookActionRef.current = "";
+      setGuestbookAction("");
     }
   }
 
   /** Approves a pending guestbook message for public display. */
   async function approveGuestbookMessage(id: number) {
+    if (guestbookActionRef.current) {
+      return;
+    }
+
+    const actionKey = `approve-${id}`;
+    guestbookActionRef.current = actionKey;
+    setGuestbookAction(actionKey);
     setError("");
     try {
       await approveMessage(id);
@@ -567,6 +673,9 @@ export function App() {
       await refreshGuestbook();
     } catch (caught) {
       setError(asErrorMessage(caught));
+    } finally {
+      guestbookActionRef.current = "";
+      setGuestbookAction("");
     }
   }
 
@@ -584,19 +693,26 @@ export function App() {
           </span>
         </button>
         <nav className="top-actions">
-          <button className="text-button" type="button" onClick={() => void showGuestbook()}>
-            <MessageSquareText size={16} />
-            留言板
+          <button className="text-button" type="button" onClick={() => void showGuestbook()} disabled={Boolean(routeAction)}>
+            {routeAction === "guestbook" ? <ButtonSpinner /> : <MessageSquareText size={16} />}
+            {routeAction === "guestbook" ? "打开中..." : "留言板"}
           </button>
-          {authenticated && (
-            <button className="icon-button" type="button" onClick={newArticle} aria-label="新增文章" title="新增文章">
-              <Plus size={18} />
+          {authenticated && view !== "editor" && (
+            <button
+              className="icon-button"
+              type="button"
+              onClick={newArticle}
+              aria-label="新增文章"
+              title="新增文章"
+              disabled={Boolean(routeAction)}
+            >
+              {routeAction === "new-article" ? <ButtonSpinner /> : <Plus size={18} />}
             </button>
           )}
           {authenticated ? (
-            <button className="text-button" type="button" onClick={handleLogout}>
-              <LogOut size={16} />
-              退出
+            <button className="text-button" type="button" onClick={handleLogout} disabled={authAction === "logout"}>
+              {authAction === "logout" ? <ButtonSpinner /> : <LogOut size={16} />}
+              {authAction === "logout" ? "退出中..." : "退出"}
             </button>
           ) : (
             <button className="text-button" type="button" onClick={() => setLoginOpen(true)}>
@@ -651,9 +767,14 @@ export function App() {
                 <Tag size={16} />
                 标签
               </div>
-              <button className={selectedTag ? "tag-filter" : "tag-filter active"} type="button" onClick={() => setSelectedTag("")}>
+              <button
+                className={selectedTag ? "tag-filter" : "tag-filter active"}
+                type="button"
+                onClick={() => setSelectedTag("")}
+                disabled={loading || loadingMore}
+              >
                 全部文章
-                <span>{allArticleTotal}</span>
+                <span>{loading && !selectedTag ? <ButtonSpinner /> : allArticleTotal}</span>
               </button>
               {tags.map((tag) => (
                 <button
@@ -661,9 +782,10 @@ export function App() {
                   type="button"
                   key={tag.slug}
                   onClick={() => setSelectedTag(tag.slug)}
+                  disabled={loading || loadingMore}
                 >
                   {tag.name}
-                  <span>{tag.count ?? 0}</span>
+                  <span>{loading && selectedTag === tag.slug ? <ButtonSpinner /> : tag.count ?? 0}</span>
                 </button>
               ))}
             </section>
@@ -680,6 +802,8 @@ export function App() {
               search={appliedSearch}
               selectedTagName={selectedTagName}
               authenticated={authenticated}
+              editingSlug={editingArticleSlug}
+              openingSlug={routeAction.startsWith("article-") ? routeAction.slice("article-".length) : ""}
               onOpen={openArticle}
               onEdit={editArticle}
             />
@@ -689,6 +813,8 @@ export function App() {
             <ArticleView
               article={activeArticle}
               authenticated={authenticated}
+              deleting={articleDeleting}
+              editing={editingArticleSlug === activeArticle.slug}
               onBack={() => showList({ restoreScroll: true })}
               onEdit={() => editArticle(activeArticle.slug)}
               onDelete={() => removeArticle(activeArticle.slug)}
@@ -700,6 +826,7 @@ export function App() {
               draft={draft}
               availableTags={tagOptions}
               editing={Boolean(editingSlug)}
+              submitting={articleSubmitting}
               onDraftChange={setDraft}
               onSubmit={submitDraft}
               onCancel={() => (activeArticle ? setView("article") : showList())}
@@ -718,6 +845,8 @@ export function App() {
               messages={guestbookMessages}
               replyTarget={guestbookReplyTarget}
               submitting={guestbookSubmitting}
+              captchaRefreshing={guestbookCaptchaRefreshing}
+              action={guestbookAction}
               onCancelReply={() => {
                 setGuestbookReplyTarget(null);
                 setGuestbookDraft((currentDraft) => ({ ...currentDraft, parentId: null }));
@@ -751,6 +880,8 @@ function Guestbook(props: {
   messages: GuestbookMessage[];
   replyTarget: GuestbookMessage | null;
   submitting: boolean;
+  captchaRefreshing: boolean;
+  action: string;
   onCancelReply: () => void;
   onApprove: (id: number) => void;
   onDelete: (id: number) => void;
@@ -820,8 +951,21 @@ function Guestbook(props: {
               <div className="captcha-field">
                 <span className="field-label">验证码</span>
                 <div className="captcha-row">
-                  <button className="captcha-question" type="button" onClick={props.onRefreshCaptcha} title="刷新验证码">
-                    {props.captcha?.question ?? "加载中..."}
+                  <button
+                    className="captcha-question"
+                    type="button"
+                    onClick={props.onRefreshCaptcha}
+                    disabled={props.captchaRefreshing}
+                    title="刷新验证码"
+                  >
+                    {props.captchaRefreshing ? (
+                      <>
+                        <ButtonSpinner />
+                        刷新中...
+                      </>
+                    ) : (
+                      props.captcha?.question ?? "加载中..."
+                    )}
                   </button>
                   <input
                     required
@@ -838,6 +982,7 @@ function Guestbook(props: {
           <div className="guestbook-submit-row">
             <span>{props.authenticated ? "管理员发送不需要邮箱和验证码。" : props.cooldown > 0 ? `请 ${props.cooldown} 秒后再发送。` : "游客需要填写全部内容。"}</span>
             <button className="text-button primary" type="submit" disabled={props.submitting || !canSubmit}>
+              {props.submitting && <ButtonSpinner />}
               {props.submitting ? "发送中..." : props.replyTarget ? "发送回复" : "发送留言"}
             </button>
           </div>
@@ -849,30 +994,39 @@ function Guestbook(props: {
           <h1>留言列表</h1>
           <span>{props.messages.length} 条主留言</span>
         </div>
-        {props.loading && <div className="skeleton">留言加载中...</div>}
+        {props.loading && <GuestbookListSkeleton />}
         {!props.loading && props.messages.length === 0 && <EmptyState title="还没有留言" description="写下第一条留言吧。" />}
-        {props.messages.map((message) => (
-          <GuestbookMessageItem
-            authenticated={props.authenticated}
-            key={message.id}
-            message={message}
-            onApprove={props.onApprove}
-            onDelete={props.onDelete}
-            onReply={props.onReply}
-          />
-        ))}
+        {!props.loading &&
+          props.messages.map((message) => (
+            <GuestbookMessageItem
+              action={props.action}
+              authenticated={props.authenticated}
+              key={message.id}
+              message={message}
+              onApprove={props.onApprove}
+              onDelete={props.onDelete}
+              onReply={props.onReply}
+            />
+          ))}
       </section>
     </div>
   );
 }
 
 function GuestbookMessageItem(props: {
+  action: string;
   authenticated: boolean;
   message: GuestbookMessage;
   onApprove: (id: number) => void;
   onDelete: (id: number) => void;
   onReply: (message: GuestbookMessage) => void;
 }) {
+  const approveActionKey = `approve-${props.message.id}`;
+  const deleteActionKey = `delete-${props.message.id}`;
+  const approving = props.action === approveActionKey;
+  const deleting = props.action === deleteActionKey;
+  const actionBusy = Boolean(props.action);
+
   return (
     <article className="message-card">
       <div className="message-head">
@@ -887,13 +1041,25 @@ function GuestbookMessageItem(props: {
             回复
           </button>
           {props.authenticated && props.message.status === "pending" && (
-            <button className="text-button ghost approve-action" type="button" onClick={() => props.onApprove(props.message.id)}>
-              通过
+            <button
+              className="text-button ghost approve-action"
+              type="button"
+              onClick={() => props.onApprove(props.message.id)}
+              disabled={actionBusy}
+            >
+              {approving && <ButtonSpinner />}
+              {approving ? "通过中..." : "通过"}
             </button>
           )}
           {props.authenticated && (
-            <button className="icon-button subtle danger-icon" type="button" onClick={() => props.onDelete(props.message.id)} aria-label="删除留言">
-              <Trash2 size={16} />
+            <button
+              className="icon-button subtle danger-icon"
+              type="button"
+              onClick={() => props.onDelete(props.message.id)}
+              aria-label="删除留言"
+              disabled={actionBusy}
+            >
+              {deleting ? <ButtonSpinner /> : <Trash2 size={16} />}
             </button>
           )}
         </div>
@@ -902,37 +1068,101 @@ function GuestbookMessageItem(props: {
       {props.message.replies.length > 0 && (
         <div className="message-replies">
           {props.message.replies.map((reply) => (
-            <article className="message-reply" key={reply.id}>
-              <div className="message-head">
-                <div>
-                  <strong>{reply.nickname}</strong>
-                  {props.authenticated && reply.status === "pending" && <span className="pending-pill">待审核</span>}
-                  {props.authenticated && reply.email && <span className="message-email"> {reply.email}</span>}
-                  {reply.replyToNickname && <span className="reply-to">回复{reply.replyToNickname}：</span>}
-                  <time title={formatDate(reply.createdAt)}>{formatDate(reply.createdAt)}</time>
-                </div>
-                <div className="message-actions">
-                  <button className="text-button ghost" type="button" onClick={() => props.onReply(reply)}>
-                    回复
-                  </button>
-                  {props.authenticated && reply.status === "pending" && (
-                    <button className="text-button ghost approve-action" type="button" onClick={() => props.onApprove(reply.id)}>
-                      通过
-                    </button>
-                  )}
-                  {props.authenticated && (
-                    <button className="icon-button subtle danger-icon" type="button" onClick={() => props.onDelete(reply.id)} aria-label="删除回复">
-                      <Trash2 size={16} />
-                    </button>
-                  )}
-                </div>
-              </div>
-              <p className="message-content">{reply.content}</p>
-            </article>
+            <GuestbookReplyItem
+              action={props.action}
+              authenticated={props.authenticated}
+              key={reply.id}
+              reply={reply}
+              onApprove={props.onApprove}
+              onDelete={props.onDelete}
+              onReply={props.onReply}
+            />
           ))}
         </div>
       )}
     </article>
+  );
+}
+
+function GuestbookReplyItem(props: {
+  action: string;
+  authenticated: boolean;
+  reply: GuestbookMessage;
+  onApprove: (id: number) => void;
+  onDelete: (id: number) => void;
+  onReply: (message: GuestbookMessage) => void;
+}) {
+  const approveActionKey = `approve-${props.reply.id}`;
+  const deleteActionKey = `delete-${props.reply.id}`;
+  const approving = props.action === approveActionKey;
+  const deleting = props.action === deleteActionKey;
+  const actionBusy = Boolean(props.action);
+
+  return (
+    <article className="message-reply">
+      <div className="message-head">
+        <div>
+          <strong>{props.reply.nickname}</strong>
+          {props.authenticated && props.reply.status === "pending" && <span className="pending-pill">待审核</span>}
+          {props.authenticated && props.reply.email && <span className="message-email"> {props.reply.email}</span>}
+          {props.reply.replyToNickname && <span className="reply-to">回复{props.reply.replyToNickname}：</span>}
+          <time title={formatDate(props.reply.createdAt)}>{formatDate(props.reply.createdAt)}</time>
+        </div>
+        <div className="message-actions">
+          <button className="text-button ghost" type="button" onClick={() => props.onReply(props.reply)}>
+            回复
+          </button>
+          {props.authenticated && props.reply.status === "pending" && (
+            <button
+              className="text-button ghost approve-action"
+              type="button"
+              onClick={() => props.onApprove(props.reply.id)}
+              disabled={actionBusy}
+            >
+              {approving && <ButtonSpinner />}
+              {approving ? "通过中..." : "通过"}
+            </button>
+          )}
+          {props.authenticated && (
+            <button
+              className="icon-button subtle danger-icon"
+              type="button"
+              onClick={() => props.onDelete(props.reply.id)}
+              aria-label="删除回复"
+              disabled={actionBusy}
+            >
+              {deleting ? <ButtonSpinner /> : <Trash2 size={16} />}
+            </button>
+          )}
+        </div>
+      </div>
+      <p className="message-content">{props.reply.content}</p>
+    </article>
+  );
+}
+
+function GuestbookListSkeleton() {
+  return (
+    <div className="guestbook-list-skeleton" aria-hidden="true">
+      {Array.from({ length: 3 }, (_, index) => (
+        <div className="message-card skeleton-message" key={index}>
+          <div className="skeleton-message-head">
+            <span className="skeleton-line name" />
+            <span className="skeleton-line date" />
+          </div>
+          <span className="skeleton-line text" />
+          <span className="skeleton-line text medium" />
+          {index === 0 && (
+            <div className="message-replies">
+              <div className="message-reply skeleton-message-reply">
+                <span className="skeleton-line name" />
+                <span className="skeleton-line text short" />
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -955,10 +1185,16 @@ function ArticleList(props: {
   search: string;
   selectedTagName: string;
   authenticated: boolean;
+  editingSlug: string;
+  openingSlug: string;
   onOpen: (slug: string) => void;
   onEdit: (slug: string) => void;
 }) {
   const hasSearch = props.search.trim().length > 0;
+  if (props.loading && !props.openingSlug && !props.editingSlug) {
+    return <ArticleListSkeleton />;
+  }
+
   if (!props.loading && props.articles.length === 0) {
     if (hasSearch) {
       return <EmptyState title="没有匹配的文章" description={`没有找到包含“${props.search.trim()}”的文章。`} />;
@@ -974,20 +1210,25 @@ function ArticleList(props: {
   return (
     <>
       <div className="article-list">
-        {props.loading && <div className="skeleton">加载中...</div>}
         {props.articles.map((article) => (
           <article className={article.coverImageUrl ? "article-row has-cover" : "article-row"} key={article.slug}>
+            {props.openingSlug === article.slug && (
+              <div className="row-loading-overlay" aria-hidden="true">
+                <ButtonSpinner />
+              </div>
+            )}
             {article.coverImageUrl && (
               <button
                 className="article-cover"
                 type="button"
                 onClick={() => props.onOpen(article.slug)}
                 aria-label={`打开文章：${article.title}`}
+                disabled={Boolean(props.openingSlug)}
               >
                 <img src={article.coverImageUrl} alt="" loading="lazy" />
               </button>
             )}
-            <button className="article-main" type="button" onClick={() => props.onOpen(article.slug)}>
+            <button className="article-main" type="button" onClick={() => props.onOpen(article.slug)} disabled={Boolean(props.openingSlug)}>
               <h2>{article.title}</h2>
               {article.excerpt && <p>{article.excerpt}</p>}
               {article.searchSnippet && (
@@ -1006,8 +1247,14 @@ function ArticleList(props: {
             <div className="row-actions">
               {article.visibility === "private" && <Lock size={16} aria-label="登录可见" />}
               {props.authenticated && (
-                <button className="icon-button subtle" type="button" onClick={() => props.onEdit(article.slug)} aria-label="编辑文章">
-                  <FilePenLine size={16} />
+                <button
+                  className="icon-button subtle"
+                  type="button"
+                  onClick={() => props.onEdit(article.slug)}
+                  aria-label="编辑文章"
+                  disabled={Boolean(props.editingSlug || props.openingSlug)}
+                >
+                  {props.editingSlug === article.slug ? <ButtonSpinner /> : <FilePenLine size={16} />}
                 </button>
               )}
             </div>
@@ -1015,11 +1262,39 @@ function ArticleList(props: {
         ))}
       </div>
       {(props.loadingMore || props.hasMore) && (
-        <div className="load-more-status" aria-live="polite">
-          {props.loadingMore ? "加载更多文章..." : "继续下滑加载更多"}
-        </div>
+        props.loadingMore ? (
+          <ArticleListSkeleton compact />
+        ) : (
+          <div className="load-more-status" aria-live="polite">
+            继续下滑加载更多
+          </div>
+        )
       )}
     </>
+  );
+}
+
+function ArticleListSkeleton(props: { compact?: boolean }) {
+  const count = props.compact ? 2 : 4;
+
+  return (
+    <div className={props.compact ? "article-list-skeleton compact" : "article-list-skeleton"} aria-hidden="true">
+      {Array.from({ length: count }, (_, index) => (
+        <div className="article-row skeleton-row has-cover" key={index}>
+          <div className="skeleton-cover" />
+          <div className="skeleton-lines">
+            <span className="skeleton-line title" />
+            <span className="skeleton-line text" />
+            <span className="skeleton-line short" />
+            <div className="skeleton-tags">
+              <span />
+              <span />
+            </div>
+          </div>
+          <span className="skeleton-action" />
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -1057,6 +1332,8 @@ function HighlightedSnippet(props: { query: string; text: string }) {
 function ArticleView(props: {
   article: Article;
   authenticated: boolean;
+  deleting: boolean;
+  editing: boolean;
   onBack: () => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -1070,13 +1347,13 @@ function ArticleView(props: {
         </button>
         {props.authenticated && (
           <div className="tool-group">
-            <button className="text-button ghost" type="button" onClick={props.onEdit}>
-              <FilePenLine size={16} />
-              编辑
+            <button className="text-button ghost" type="button" onClick={props.onEdit} disabled={props.editing || props.deleting}>
+              {props.editing ? <ButtonSpinner /> : <FilePenLine size={16} />}
+              {props.editing ? "打开中..." : "编辑"}
             </button>
-            <button className="text-button danger" type="button" onClick={props.onDelete}>
-              <Trash2 size={16} />
-              删除
+            <button className="text-button danger" type="button" onClick={props.onDelete} disabled={props.deleting || props.editing}>
+              {props.deleting ? <ButtonSpinner /> : <Trash2 size={16} />}
+              {props.deleting ? "删除中..." : "删除"}
             </button>
           </div>
         )}
@@ -1227,6 +1504,10 @@ function CodeBlock(props: { children: React.ReactNode }) {
   );
 }
 
+function ButtonSpinner() {
+  return <span className="button-spinner" aria-hidden="true" />;
+}
+
 function extractText(value: React.ReactNode): string {
   if (typeof value === "string" || typeof value === "number") {
     return String(value);
@@ -1247,6 +1528,7 @@ function Editor(props: {
   draft: ArticleInput;
   availableTags: TagType[];
   editing: boolean;
+  submitting: boolean;
   onDraftChange: (draft: ArticleInput) => void;
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   onCancel: () => void;
@@ -1263,11 +1545,12 @@ function Editor(props: {
           <h1>{props.editing ? "编辑文章" : "新增文章"}</h1>
         </div>
         <div className="tool-group">
-          <button className="text-button ghost" type="button" onClick={props.onCancel}>
+          <button className="text-button ghost" type="button" onClick={props.onCancel} disabled={props.submitting}>
             取消
           </button>
-          <button className="text-button primary" type="submit">
-            保存
+          <button className="text-button primary" type="submit" disabled={props.submitting}>
+            {props.submitting && <ButtonSpinner />}
+            {props.submitting ? "保存中..." : "保存"}
           </button>
         </div>
       </div>
@@ -1473,9 +1756,15 @@ function LoginDialog(props: { onClose: () => void; onLogin: (username: string, p
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const submittingRef = useRef(false);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (submittingRef.current) {
+      return;
+    }
+
+    submittingRef.current = true;
     setSubmitting(true);
     setError("");
     try {
@@ -1483,6 +1772,7 @@ function LoginDialog(props: { onClose: () => void; onLogin: (username: string, p
     } catch (caught) {
       setError(asErrorMessage(caught));
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   }
@@ -1511,6 +1801,7 @@ function LoginDialog(props: { onClose: () => void; onLogin: (username: string, p
           />
         </label>
         <button className="text-button primary full" type="submit" disabled={submitting}>
+          {submitting && <ButtonSpinner />}
           {submitting ? "登录中..." : "登录"}
         </button>
       </form>

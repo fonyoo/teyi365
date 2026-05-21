@@ -254,6 +254,17 @@ button {
   color: #1f3a2f;
 }
 
+.tag-filter:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.tag-filter .button-spinner {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+}
+
 .content-area {
   min-width: 0;
 }
@@ -327,6 +338,95 @@ button {
   gap: 12px;
 }
 
+.article-list-skeleton {
+  display: grid;
+  gap: 12px;
+}
+
+.article-list-skeleton.compact {
+  margin-top: 12px;
+}
+
+.skeleton-row {
+  grid-template-columns: minmax(150px, 190px) minmax(0, 1fr) auto;
+  pointer-events: none;
+}
+
+.skeleton-cover,
+.skeleton-line,
+.skeleton-tags span,
+.skeleton-action {
+  display: block;
+  overflow: hidden;
+  position: relative;
+  border-radius: 7px;
+  background: #e8ebe4;
+}
+
+.skeleton-cover::after,
+.skeleton-line::after,
+.skeleton-tags span::after,
+.skeleton-action::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 62%), transparent);
+  animation: skeleton-shimmer 1.2s ease-in-out infinite;
+}
+
+.skeleton-cover {
+  min-height: 136px;
+}
+
+.skeleton-lines {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.skeleton-line {
+  width: 100%;
+  height: 12px;
+}
+
+.skeleton-line.title {
+  width: min(78%, 420px);
+  height: 24px;
+}
+
+.skeleton-line.text {
+  width: min(92%, 620px);
+}
+
+.skeleton-line.short {
+  width: min(48%, 280px);
+}
+
+.skeleton-tags {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.skeleton-tags span {
+  width: 76px;
+  height: 24px;
+  border-radius: 999px;
+}
+
+.skeleton-action {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+}
+
+@keyframes skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
 .load-more-status {
   margin-top: 18px;
   color: #7a7f76;
@@ -335,6 +435,7 @@ button {
 }
 
 .article-row {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 16px;
@@ -344,6 +445,27 @@ button {
   border-radius: 8px;
   background: #fff;
   box-shadow: 0 10px 30px rgb(31 35 28 / 4%);
+}
+
+.article-row:has(.article-main:disabled),
+.article-row:has(.article-cover:disabled) {
+  opacity: 0.72;
+}
+
+.row-loading-overlay {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid #d7d5cc;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 88%);
+  color: #31523d;
+  box-shadow: 0 8px 20px rgb(17 24 39 / 12%);
 }
 
 .article-row.has-cover {
@@ -562,6 +684,37 @@ button {
   gap: 12px;
 }
 
+.guestbook-list-skeleton {
+  display: grid;
+  gap: 12px;
+}
+
+.skeleton-message,
+.skeleton-message-reply {
+  pointer-events: none;
+}
+
+.skeleton-message-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.skeleton-line.name {
+  width: 120px;
+  height: 18px;
+}
+
+.skeleton-line.date {
+  width: 86px;
+  height: 12px;
+}
+
+.skeleton-line.medium {
+  width: min(70%, 520px);
+}
+
 .guestbook-list-heading {
   display: flex;
   align-items: baseline;
@@ -707,9 +860,32 @@ button {
 }
 
 .icon-button:disabled,
-.text-button:disabled {
+.text-button:disabled,
+.captcha-question:disabled {
   cursor: not-allowed;
   opacity: 0.65;
+}
+
+.button-spinner {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: button-spin 0.75s linear infinite;
+}
+
+.text-button.primary .button-spinner {
+  border-color: rgb(255 255 255 / 72%);
+  border-right-color: transparent;
+}
+
+@keyframes button-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .article-page {
@@ -1365,11 +1541,16 @@ textarea {
     grid-template-columns: 1fr;
   }
 
+  .skeleton-row {
+    grid-template-columns: 1fr auto;
+  }
+
   .article-row.has-cover {
     grid-template-columns: 1fr auto;
   }
 
-  .article-cover {
+  .article-cover,
+  .skeleton-cover {
     grid-column: 1 / -1;
     aspect-ratio: 16 / 9;
     min-height: 0;
