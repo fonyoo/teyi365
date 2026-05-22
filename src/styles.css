@@ -1528,6 +1528,20 @@ textarea {
     flex-direction: column;
   }
 
+  .editor .content-heading.compact {
+    position: static;
+    align-items: flex-end;
+    flex-direction: row;
+    padding-top: 0;
+    background: transparent;
+    backdrop-filter: none;
+  }
+
+  .editor .content-heading.compact .tool-group {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+  }
+
   .content-heading h1,
   .article-header h1 {
     font-size: 36px;
@@ -1593,6 +1607,7 @@ textarea {
 
   .content-field textarea {
     min-height: 460px;
+    scroll-margin-top: 96px;
   }
 
   .preview-body {
