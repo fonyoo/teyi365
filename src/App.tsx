@@ -680,7 +680,7 @@ export function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={view === "editor" ? "app-shell app-shell-editor" : "app-shell"}>
       <header className="topbar">
         <button className="brand-button" type="button" onClick={() => showList()}>
           <img className="brand-mark" src="/logo.svg" alt="Cloudflare Blog" />

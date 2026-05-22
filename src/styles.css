@@ -1468,6 +1468,10 @@ textarea {
     padding: 13px 16px;
   }
 
+  .app-shell-editor .topbar {
+    position: static;
+  }
+
   .toast-region {
     top: 84px;
     right: 14px;
