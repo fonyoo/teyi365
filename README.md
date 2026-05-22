@@ -275,3 +275,169 @@ pnpm db:migrate:remote
 - 私密文章只有登录后可见。
 - 登录后可新增、编辑、删除文章，支持多标签和公开/登录可见配置。
 - Markdown 使用 GitHub 风格渲染，支持 GFM 表格、任务列表和代码块高亮。
+
+## 常用命令说明
+
+这个项目里的 `pnpm db:migrate:local`、`pnpm cf:dev` 这类命令，不是 pnpm 自带的数据库命令，也不是系统里单独安装了一个叫 `db` 或 `cf` 的软件。
+
+它们都定义在 `package.json` 的 `scripts` 里。pnpm 会读取这些脚本，例如：
+
+```json
+{
+  "scripts": {
+    "cf:dev": "wrangler pages dev dist --compatibility-date=2026-05-19",
+    "db:migrate:local": "wrangler d1 migrations apply cloudflare_blog --local",
+    "db:migrate:remote": "wrangler d1 migrations apply cloudflare_blog --remote",
+    "db:seed:local": "wrangler d1 execute cloudflare_blog --local --file ./scripts/seed-local.sql"
+  }
+}
+```
+
+所以：
+
+```bash
+pnpm cf:dev
+```
+
+基本等于：
+
+```bash
+pnpm run cf:dev
+```
+
+再等于实际执行：
+
+```bash
+wrangler pages dev dist --compatibility-date=2026-05-19
+```
+
+pnpm 在执行 scripts 时会自动把 `node_modules/.bin` 加到命令查找路径里，所以只要执行过 `pnpm install`，项目依赖里的 `wrangler`、`vite`、`tsc` 这些命令就能直接在脚本里使用，不需要全局安装。
+
+### `pnpm install`
+
+安装 `package.json` 里声明的依赖。
+
+这个项目的 Cloudflare 命令主要依赖 `wrangler`，它在 `devDependencies` 里。第一次拉代码、换电脑、或者依赖文件变化后，需要执行：
+
+```bash
+pnpm install
+```
+
+### D1、DB 和 `db` 分别是什么
+
+`D1` 是 Cloudflare 提供的 SQL 数据库服务，可以把它理解成 Cloudflare 上的轻量数据库。
+
+`DB` 是代码里使用的绑定名，在 `wrangler.toml` 里配置：
+
+```toml
+[[d1_databases]]
+binding = "DB"
+database_name = "cloudflare_blog"
+database_id = "..."
+```
+
+后端函数里通过 `env.DB` 访问数据库。
+
+`db:migrate:local` 里的 `db` 只是脚本名字的一部分，是为了让命令看起来有分类感。它不是一个数据库软件，也不是一个 npm 包。
+
+### `pnpm build`
+
+实际执行：
+
+```bash
+tsc -b && vite build
+```
+
+作用是先做 TypeScript 构建检查，再用 Vite 把前端打包到 `dist/` 目录。
+
+Cloudflare Pages 部署时也会执行这个构建命令。
+
+### `pnpm cf:dev`
+
+实际执行：
+
+```bash
+wrangler pages dev dist --compatibility-date=2026-05-19
+```
+
+`cf` 是 Cloudflare 的缩写，只是脚本名字的一部分。`cf:dev` 整个才是脚本名，不是 `cf` 这个库下面的 `dev` 命令。
+
+这个命令会用 Wrangler 在本地启动 Cloudflare Pages 预览：
+
+- 静态页面来自 `dist/`
+- API 来自 `functions/`
+- 本地环境变量来自 `.dev.vars`
+- 本地 D1 数据库由 Wrangler 管理
+
+因为它读取的是 `dist/`，所以启动前通常要先执行：
+
+```bash
+pnpm build
+```
+
+### `pnpm db:migrate:local`
+
+实际执行：
+
+```bash
+wrangler d1 migrations apply cloudflare_blog --local
+```
+
+意思是：把 `migrations/` 目录里的数据库结构变更应用到本地 D1 数据库。
+
+Wrangler 的 D1 migrations 默认会读取项目目录下的 `migrations/` 文件夹，按文件名顺序执行还没执行过的 `.sql` 文件，例如：
+
+```text
+migrations/
+0001_initial.sql
+0002_article_cover_image.sql
+0003_guestbook_messages.sql
+```
+
+执行过哪些迁移，D1 会记录在数据库里的 `d1_migrations` 表中。所以下次再执行时，只会应用还没应用过的新迁移。
+
+`--local` 表示只改本地数据库，不会影响 Cloudflare 线上的 D1。
+
+### `pnpm db:migrate:remote`
+
+实际执行：
+
+```bash
+wrangler d1 migrations apply cloudflare_blog --remote
+```
+
+意思是：把 `migrations/` 目录里还没应用过的数据库结构变更，应用到 Cloudflare 线上的 D1 数据库。
+
+这个命令会影响线上数据库结构，所以新增迁移文件后建议先跑：
+
+```bash
+pnpm db:migrate:local
+```
+
+本地确认没问题，再跑：
+
+```bash
+pnpm db:migrate:remote
+```
+
+注意：它同步的是数据库结构变更，不是把本地文章数据同步到线上。线上已有文章会继续留在线上，除非你的迁移 SQL 主动删除或覆盖数据。
+
+### `pnpm db:seed:local`
+
+实际执行：
+
+```bash
+wrangler d1 execute cloudflare_blog --local --file ./scripts/seed-local.sql
+```
+
+意思是：把 `scripts/seed-local.sql` 这个 SQL 文件执行到本地 D1 数据库里。
+
+这个文件会插入几篇本地演示文章和标签，方便第一次启动后马上看到内容。它只作用于本地，因为命令里有 `--local`。
+
+一般只在第一次初始化本地数据库时执行一次：
+
+```bash
+pnpm db:seed:local
+```
+
+线上不要随便执行 seed，除非你明确想把演示数据插入线上数据库。
