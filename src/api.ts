@@ -10,6 +10,17 @@ import type {
   Tag
 } from "./types";
 
+export class ApiRequestError extends Error {
+  /** Creates an API error whose code lets the UI choose the correct recovery flow. */
+  constructor(
+    message: string,
+    readonly code: string
+  ) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
 async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     credentials: "include",
@@ -23,10 +34,10 @@ async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> 
   const data = (await response.json().catch(() => ({}))) as unknown;
 
   if (!response.ok) {
-    const payload = data as ApiErrorPayload;
+    const payload = typeof data === "object" && data !== null ? (data as ApiErrorPayload) : {};
     const message =
       typeof data === "object" && data !== null && payload.error?.message ? payload.error.message : "请求失败";
-    throw new Error(message);
+    throw new ApiRequestError(message, payload.error?.code ?? "UNKNOWN");
   }
 
   return data as T;
@@ -74,8 +85,11 @@ export async function listTags(params: { search?: string } = {}) {
   return requestJson<{ tags: Tag[] }>(`/api/tags${query ? `?${query}` : ""}`);
 }
 
-export async function getArticle(slug: string) {
-  return requestJson<{ article: Article }>(`/api/articles/${encodeURIComponent(slug)}`);
+export async function getArticle(slug: string, password = "") {
+  const searchParams = new URLSearchParams();
+  if (password) searchParams.set("password", password);
+  const query = searchParams.toString();
+  return requestJson<{ article: Article }>(`/api/articles/${encodeURIComponent(slug)}${query ? `?${query}` : ""}`);
 }
 
 export async function createArticle(input: ArticleInput) {

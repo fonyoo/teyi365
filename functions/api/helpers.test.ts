@@ -43,6 +43,19 @@ describe("api helpers", () => {
       visibility: "private",
       tags: ["Cloudflare"]
     });
+
+    expect(
+      validateArticleInput({
+        title: "Protected",
+        content: "Body",
+        visibility: "password",
+        accessPassword: "A2b9",
+        tags: []
+      })
+    ).toMatchObject({ visibility: "password", accessPassword: "A2b9" });
+    expect(() =>
+      validateArticleInput({ title: "Protected", content: "Body", visibility: "password", accessPassword: "bad", tags: [] })
+    ).toThrow();
   });
 
   it("shows a body search snippet when the title and excerpt do not contain the query", () => {

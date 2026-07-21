@@ -6,6 +6,7 @@ export const emptyArticleInput: ArticleInput = {
   coverImageUrl: "",
   content: "",
   visibility: "public",
+  accessPassword: "",
   tags: []
 };
 
@@ -49,7 +50,8 @@ export function articleToInput(article: {
   excerpt: string;
   coverImageUrl?: string;
   content: string;
-  visibility: "public" | "private";
+  visibility: "public" | "private" | "password";
+  accessPassword?: string;
   tags: { name: string }[];
 }): ArticleInput {
   return {
@@ -58,6 +60,7 @@ export function articleToInput(article: {
     coverImageUrl: article.coverImageUrl ?? "",
     content: article.content,
     visibility: article.visibility,
+    accessPassword: article.accessPassword ?? "",
     tags: article.tags.map((tag) => tag.name)
   };
 }

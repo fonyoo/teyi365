@@ -17,6 +17,7 @@ import {
   Check,
   Plus,
   Search,
+  Share2,
   TagIcon,
   Tag,
   Trash2,
@@ -37,7 +38,8 @@ import {
   login,
   logout,
   searchArticles,
-  updateArticle
+  updateArticle,
+  ApiRequestError
 } from "./api";
 import type {
   Article,
@@ -53,12 +55,18 @@ import { articleToInput, emptyArticleInput, formatArticleTimeTitle, formatDate, 
 import type { Options as RehypeSanitizeOptions } from "rehype-sanitize";
 
 type View = "list" | "article" | "editor" | "guestbook";
+interface PasswordPromptState {
+  slug: string;
+  value: string;
+  error: string;
+}
 const firstArticlePage = 1; // Initial article list page.
 const siteTitle = "仰晨博客"; // Browser title used outside article pages.
 const guestbookPath = "/guestbook"; // Shareable path for the guestbook page.
 const searchDebounceMs = 650; // Delay before querying as the visitor types.
 const minAutoSearchLength = 2; // One-character input stays local to save Cloudflare requests.
 const guestbookCooldownKey = "guestbook:lastSentAt"; // Local storage key for client-side guest cooldown.
+const passwordQueryKey = "password"; // URL query key used by password article share links.
 
 const markdownSanitizeSchema: RehypeSanitizeOptions = {
   ...defaultSchema,
@@ -104,6 +112,7 @@ export function App() {
   const [view, setView] = useState<View>("list");
   const [authenticated, setAuthenticated] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
+  const [passwordPrompt, setPasswordPrompt] = useState<PasswordPromptState | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [articlePage, setArticlePage] = useState(firstArticlePage);
@@ -233,7 +242,7 @@ export function App() {
       return;
     }
 
-    await loadArticle(slug, false);
+    await loadArticle(slug, false, new URLSearchParams(window.location.search).get(passwordQueryKey) ?? "");
   }
 
   const refreshContent = useCallback(async () => {
@@ -353,20 +362,32 @@ export function App() {
   }
 
   /** Loads an article and moves the single-page app into article view. */
-  async function loadArticle(slug: string, pushUrl: boolean) {
+  async function loadArticle(slug: string, pushUrl: boolean, password = "") {
     setError("");
     setLoading(true);
     try {
-      const result = await getArticle(slug);
+      const result = await getArticle(slug, password);
       setActiveArticle(result.article);
+      setPasswordPrompt(null);
       setView("article");
-      if (pushUrl && window.location.pathname !== articlePath(result.article.slug)) {
-        window.history.pushState(null, "", articlePath(result.article.slug));
+      if (pushUrl) {
+        const nextUrl = new URL(articlePath(result.article.slug), window.location.origin);
+        if (password && result.article.visibility === "password") {
+          nextUrl.searchParams.set(passwordQueryKey, password);
+        }
+        if (window.location.pathname + window.location.search !== nextUrl.pathname + nextUrl.search) {
+          window.history.pushState(null, "", `${nextUrl.pathname}${nextUrl.search}`);
+        }
       }
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (caught) {
-      setError(asErrorMessage(caught));
-      setLoginOpen(!authenticated);
+      if (caught instanceof ApiRequestError && ["PASSWORD_REQUIRED", "INVALID_PASSWORD", "RATE_LIMIT"].includes(caught.code)) {
+        setPasswordPrompt({ slug, value: password, error: caught.message });
+        setError("");
+      } else {
+        setError(asErrorMessage(caught));
+        setLoginOpen(!authenticated);
+      }
       if (!pushUrl) {
         setView("list");
       }
@@ -379,6 +400,7 @@ export function App() {
     setActiveArticle(null);
     setEditingSlug(null);
     setView("list");
+    setPasswordPrompt(null);
     if (window.location.pathname !== "/") {
       window.history.pushState(null, "", "/");
     }
@@ -455,6 +477,36 @@ export function App() {
       setLoading(false);
       setEditingArticleSlug("");
     }
+  }
+
+  /** Copies an article title and its current URL, retaining a password query when needed. */
+  async function shareArticle() {
+    if (!activeArticle) {
+      return;
+    }
+
+    const shareUrl = new URL(articlePath(activeArticle.slug), window.location.origin);
+    const currentPassword = new URLSearchParams(window.location.search).get(passwordQueryKey) ?? activeArticle.accessPassword ?? "";
+    if (activeArticle.visibility === "password" && currentPassword) {
+      shareUrl.searchParams.set(passwordQueryKey, currentPassword);
+    }
+
+    try {
+      await navigator.clipboard.writeText(`${activeArticle.title}\n${shareUrl.toString()}`);
+      setNotice("分享内容已复制");
+    } catch {
+      setError("复制失败，请检查浏览器剪贴板权限");
+    }
+  }
+
+  /** Tries the password currently entered in the unlock dialog. */
+  async function submitArticlePassword(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!passwordPrompt) {
+      return;
+    }
+
+    await loadArticle(passwordPrompt.slug, true, passwordPrompt.value);
   }
 
   async function submitDraft(event: React.FormEvent<HTMLFormElement>) {
@@ -818,6 +870,7 @@ export function App() {
               onBack={() => showList({ restoreScroll: true })}
               onEdit={() => editArticle(activeArticle.slug)}
               onDelete={() => removeArticle(activeArticle.slug)}
+              onShare={() => void shareArticle()}
             />
           )}
 
@@ -867,6 +920,19 @@ export function App() {
       </main>
 
       {loginOpen && <LoginDialog onClose={() => setLoginOpen(false)} onLogin={handleLogin} />}
+      {passwordPrompt && (
+        <ArticlePasswordDialog
+          state={passwordPrompt}
+          onChange={(value) => setPasswordPrompt((current) => (current ? { ...current, value } : current))}
+          onClose={() => {
+            setPasswordPrompt(null);
+            if (!activeArticle && window.location.pathname.startsWith("/articles/")) {
+              showList();
+            }
+          }}
+          onSubmit={submitArticlePassword}
+        />
+      )}
     </div>
   );
 }
@@ -1246,6 +1312,7 @@ function ArticleList(props: {
             </button>
             <div className="row-actions">
               {article.visibility === "private" && <Lock size={16} aria-label="登录可见" />}
+              {article.visibility === "password" && <Lock size={16} aria-label="密码可见" />}
               {props.authenticated && (
                 <button
                   className="icon-button subtle"
@@ -1337,6 +1404,7 @@ function ArticleView(props: {
   onBack: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  onShare: () => void;
 }) {
   return (
     <article className="article-page">
@@ -1344,6 +1412,10 @@ function ArticleView(props: {
         <button className="text-button ghost" type="button" onClick={props.onBack}>
           <ArrowLeft size={16} />
           返回
+        </button>
+        <button className="text-button ghost" type="button" onClick={props.onShare}>
+          <Share2 size={16} />
+          分享
         </button>
         {props.authenticated && (
           <div className="tool-group">
@@ -1594,8 +1666,35 @@ function Editor(props: {
             />
             <fieldset className="visibility-control">
               <legend>可见性</legend>
-              <SegmentedVisibility value={props.draft.visibility} onChange={(value) => setField("visibility", value)} />
+              <SegmentedVisibility
+                value={props.draft.visibility}
+                onChange={(value) => {
+                  const nextDraft = { ...props.draft, visibility: value };
+                  if (value === "password" && !nextDraft.accessPassword) {
+                    nextDraft.accessPassword = createDefaultArticlePassword();
+                  }
+                  if (value !== "password") {
+                    nextDraft.accessPassword = "";
+                  }
+                  props.onDraftChange(nextDraft);
+                }}
+              />
             </fieldset>
+            {props.draft.visibility === "password" && (
+              <label>
+                访问密码
+                <input
+                  required
+                  maxLength={4}
+                  minLength={4}
+                  pattern="[A-Za-z0-9]{4}"
+                  value={props.draft.accessPassword}
+                  onChange={(event) => setField("accessPassword", event.target.value.replace(/[^A-Za-z0-9]/g, "").slice(0, 4))}
+                  placeholder="4 位字母或数字"
+                  autoComplete="off"
+                />
+              </label>
+            )}
           </div>
           <div className="editor-compose">
             <label className="content-field">
@@ -1747,6 +1846,61 @@ function SegmentedVisibility(props: { value: Visibility; onChange: (value: Visib
         <EyeOff size={16} />
         登录可见
       </button>
+      <button
+        className={props.value === "password" ? "active" : ""}
+        type="button"
+        onClick={() => props.onChange("password")}
+      >
+        <Lock size={16} />
+        密码可见
+      </button>
+    </div>
+  );
+}
+
+/** Creates a four-character alphanumeric password for a newly protected article. */
+function createDefaultArticlePassword() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const values = new Uint32Array(4);
+  crypto.getRandomValues(values);
+  return Array.from(values, (value) => alphabet[value % alphabet.length]).join("");
+}
+
+function ArticlePasswordDialog(props: {
+  state: PasswordPromptState;
+  onChange: (value: string) => void;
+  onClose: () => void;
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+}) {
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <form className="login-dialog password-dialog" onSubmit={props.onSubmit}>
+        <div className="dialog-header">
+          <h2>输入访问密码</h2>
+          <button className="icon-button subtle" type="button" onClick={props.onClose} aria-label="关闭">
+            <X size={18} />
+          </button>
+        </div>
+        <p className="dialog-description">这篇文章需要密码才能查看。</p>
+        {props.state.error && <Status tone="error" text={props.state.error} onClose={() => undefined} />}
+        <label>
+          访问密码
+          <input
+            autoFocus
+            required
+            maxLength={4}
+            minLength={4}
+            pattern="[A-Za-z0-9]{4}"
+            value={props.state.value}
+            onChange={(event) => props.onChange(event.target.value.replace(/[^A-Za-z0-9]/g, "").slice(0, 4))}
+            autoComplete="off"
+          />
+        </label>
+        <button className="text-button primary full" type="submit">
+          <Lock size={16} />
+          解锁文章
+        </button>
+      </form>
     </div>
   );
 }

@@ -5,7 +5,7 @@ interface Env {
   SESSION_SECRET: string;
 }
 
-type Visibility = "public" | "private";
+type Visibility = "public" | "private" | "password";
 
 interface ArticleRow {
   id: number;
@@ -15,6 +15,7 @@ interface ArticleRow {
   cover_image_url: string;
   content_md: string;
   visibility: Visibility;
+  access_password: string;
   created_at: string;
   updated_at: string;
 }
@@ -31,6 +32,7 @@ interface ArticleInput {
   coverImageUrl?: string;
   content: string;
   visibility: Visibility;
+  accessPassword?: string;
   tags: string[];
 }
 
@@ -80,6 +82,8 @@ type ApiErrorCode =
   | "FORBIDDEN"
   | "NOT_FOUND"
   | "RATE_LIMIT"
+  | "PASSWORD_REQUIRED"
+  | "INVALID_PASSWORD"
   | "METHOD_NOT_ALLOWED"
   | "SERVER_ERROR";
 
@@ -92,6 +96,9 @@ const messageCaptchaTtlMs = 10 * 60 * 1000; // Time before a captcha token expir
 const messageNicknameMaxLength = 10; // Maximum displayed nickname length.
 const messageEmailMaxLength = 120; // Maximum email length stored for administrator view.
 const messageContentMaxLength = 500; // Maximum plain-text message length.
+const passwordAttemptLimit = 5; // Failed article-password attempts allowed per visitor window.
+const passwordAttemptWindowMs = 60 * 60 * 1000; // Failed-attempt window length.
+const passwordBanMs = 60 * 60 * 1000; // IP ban length after too many failed attempts.
 
 export const onRequest: PagesFunction<Env> = async (context) => {
   try {
@@ -212,11 +219,16 @@ async function handleArticles(context: EventContext<Env, string, unknown>, segme
 
   if (request.method === "GET") {
     const article = await getArticleBySlug(env.DB, slug);
-    if (!article || (!authenticated && article.visibility === "private")) {
+    if (!article || (!authenticated && article.visibility === "private" && !article.access_password)) {
       return jsonError("NOT_FOUND", "文章不存在或需要登录后查看", 404);
     }
 
-    return json({ article: await articleWithTags(env.DB, article) });
+    if (!authenticated && article.access_password) {
+      const suppliedPassword = new URL(request.url).searchParams.get("password") ?? "";
+      await verifyArticlePassword(request, env.DB, env.SESSION_SECRET, article.access_password, suppliedPassword);
+    }
+
+    return json({ article: await articleWithTags(env.DB, article, true, authenticated) });
   }
 
   if (request.method === "PUT") {
@@ -492,7 +504,7 @@ async function listArticles(
     ${where}
   `;
   const query = `
-    SELECT a.id, a.slug, a.title, a.excerpt, a.cover_image_url, a.content_md, a.visibility, a.created_at, a.updated_at
+    SELECT a.id, a.slug, a.title, a.excerpt, a.cover_image_url, a.content_md, a.visibility, a.access_password, a.created_at, a.updated_at
     FROM articles a
     ${joinTag}
     ${where}
@@ -570,12 +582,12 @@ async function createArticle(db: D1Database, input: ArticleInput) {
   const result = await db
     .prepare(
       `
-        INSERT INTO articles (slug, title, excerpt, cover_image_url, content_md, visibility)
-        VALUES (?, ?, ?, ?, ?, ?)
-        RETURNING id, slug, title, excerpt, cover_image_url, content_md, visibility, created_at, updated_at
+        INSERT INTO articles (slug, title, excerpt, cover_image_url, content_md, visibility, access_password)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        RETURNING id, slug, title, excerpt, cover_image_url, content_md, visibility, access_password, created_at, updated_at
       `
     )
-    .bind(slug, input.title, input.excerpt ?? "", input.coverImageUrl ?? "", input.content, input.visibility)
+    .bind(slug, input.title, input.excerpt ?? "", input.coverImageUrl ?? "", input.content, storedVisibility(input.visibility), input.accessPassword ?? "")
     .first<ArticleRow>();
 
   if (!result) {
@@ -584,7 +596,7 @@ async function createArticle(db: D1Database, input: ArticleInput) {
 
   await replaceArticleTags(db, result.id, input.tags);
   await cleanupOrphanedTags(db);
-  return articleWithTags(db, result);
+  return articleWithTags(db, result, true, true);
 }
 
 async function updateArticle(db: D1Database, slug: string, input: ArticleInput) {
@@ -597,12 +609,12 @@ async function updateArticle(db: D1Database, slug: string, input: ArticleInput) 
     .prepare(
       `
         UPDATE articles
-        SET title = ?, excerpt = ?, cover_image_url = ?, content_md = ?, visibility = ?, updated_at = datetime('now')
+        SET title = ?, excerpt = ?, cover_image_url = ?, content_md = ?, visibility = ?, access_password = ?, updated_at = datetime('now')
         WHERE slug = ?
-        RETURNING id, slug, title, excerpt, cover_image_url, content_md, visibility, created_at, updated_at
+        RETURNING id, slug, title, excerpt, cover_image_url, content_md, visibility, access_password, created_at, updated_at
       `
     )
-    .bind(input.title, input.excerpt ?? "", input.coverImageUrl ?? "", input.content, input.visibility, slug)
+    .bind(input.title, input.excerpt ?? "", input.coverImageUrl ?? "", input.content, storedVisibility(input.visibility), input.accessPassword ?? "", slug)
     .first<ArticleRow>();
 
   if (!result) {
@@ -611,7 +623,7 @@ async function updateArticle(db: D1Database, slug: string, input: ArticleInput) 
 
   await replaceArticleTags(db, result.id, input.tags);
   await cleanupOrphanedTags(db);
-  return articleWithTags(db, result);
+  return articleWithTags(db, result, true, true);
 }
 
 async function replaceArticleTags(db: D1Database, articleId: number, tagNames: string[]) {
@@ -651,7 +663,7 @@ async function cleanupOrphanedTags(db: D1Database) {
     .run();
 }
 
-async function articleWithTags(db: D1Database, row: ArticleRow, includeContent = true) {
+async function articleWithTags(db: D1Database, row: ArticleRow, includeContent = true, includePassword = false) {
   const tags = await getArticleTags(db, row.id);
   return {
     slug: row.slug,
@@ -659,7 +671,8 @@ async function articleWithTags(db: D1Database, row: ArticleRow, includeContent =
     excerpt: row.excerpt,
     coverImageUrl: row.cover_image_url ?? "",
     content: includeContent ? row.content_md : undefined,
-    visibility: row.visibility,
+    visibility: row.access_password ? "password" : row.visibility,
+    ...(includePassword && row.access_password ? { accessPassword: row.access_password } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     tags
@@ -670,7 +683,7 @@ async function getArticleBySlug(db: D1Database, slug: string) {
   return db
     .prepare(
       `
-        SELECT id, slug, title, excerpt, cover_image_url, content_md, visibility, created_at, updated_at
+        SELECT id, slug, title, excerpt, cover_image_url, content_md, visibility, access_password, created_at, updated_at
         FROM articles
         WHERE slug = ?
       `
@@ -770,7 +783,8 @@ export function validateArticleInput(raw: Partial<ArticleInput>): ArticleInput {
   const content = String(raw.content ?? "").trim();
   const excerpt = String(raw.excerpt ?? "").trim();
   const coverImageUrl = String(raw.coverImageUrl ?? "").trim();
-  const visibility = raw.visibility === "private" ? "private" : "public";
+  const visibility: Visibility = raw.visibility === "private" || raw.visibility === "password" ? raw.visibility : "public";
+  const accessPassword = String(raw.accessPassword ?? "").trim();
   const tags = Array.isArray(raw.tags) ? raw.tags.map(String) : [];
 
   if (title.length < 1 || title.length > 120) {
@@ -789,14 +803,85 @@ export function validateArticleInput(raw: Partial<ArticleInput>): ArticleInput {
     throw new ApiError("BAD_REQUEST", "图片 URL 不能超过 2048 个字符", 400);
   }
 
+  if (visibility === "password" && !/^[A-Za-z0-9]{4}$/.test(accessPassword)) {
+    throw new ApiError("BAD_REQUEST", "密码可见文章需要 4 位字母或数字密码", 400);
+  }
+
   return {
     title,
     content,
     excerpt,
     coverImageUrl,
     visibility,
+    accessPassword: visibility === "password" ? accessPassword : "",
     tags: normalizedTags(tags)
   };
+}
+
+/** Maps the UI-only password visibility to the existing private database state. */
+function storedVisibility(visibility: Visibility): "public" | "private" {
+  return visibility === "public" ? "public" : "private";
+}
+
+/** Checks an article password and records failed attempts for the visitor IP. */
+async function verifyArticlePassword(
+  request: Request,
+  db: D1Database,
+  sessionSecret: string,
+  expectedPassword: string,
+  suppliedPassword: string
+) {
+  if (!suppliedPassword) {
+    throw new ApiError("PASSWORD_REQUIRED", "请输入文章访问密码", 401);
+  }
+
+  const visitorHash = await articlePasswordVisitorHash(request, sessionSecret);
+  const now = Date.now();
+  const attempt = await db
+    .prepare("SELECT failed_count, window_started_at, blocked_until FROM article_password_attempts WHERE visitor_hash = ?")
+    .bind(visitorHash)
+    .first<{ failed_count: number; window_started_at: number; blocked_until: number }>();
+
+  if (attempt?.blocked_until && attempt.blocked_until > now) {
+    const retryAfter = Math.ceil((attempt.blocked_until - now) / 1000);
+    throw new ApiError("RATE_LIMIT", `尝试次数过多，请 ${Math.ceil(retryAfter / 60)} 分钟后再试`, 429);
+  }
+
+  if (safeEqual(suppliedPassword, expectedPassword)) {
+    await db.prepare("DELETE FROM article_password_attempts WHERE visitor_hash = ?").bind(visitorHash).run();
+    return;
+  }
+
+  const inWindow = Boolean(attempt && now - attempt.window_started_at < passwordAttemptWindowMs);
+  const failedCount = (inWindow ? attempt?.failed_count ?? 0 : 0) + 1;
+  const windowStartedAt = inWindow ? attempt?.window_started_at ?? now : now;
+  const blockedUntil = failedCount >= passwordAttemptLimit ? now + passwordBanMs : 0;
+  await db
+    .prepare(
+      `
+        INSERT INTO article_password_attempts (visitor_hash, failed_count, window_started_at, blocked_until, updated_at)
+        VALUES (?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(visitor_hash) DO UPDATE SET
+          failed_count = excluded.failed_count,
+          window_started_at = excluded.window_started_at,
+          blocked_until = excluded.blocked_until,
+          updated_at = datetime('now')
+      `
+    )
+    .bind(visitorHash, failedCount, windowStartedAt, blockedUntil)
+    .run();
+
+  if (blockedUntil) {
+    throw new ApiError("RATE_LIMIT", "密码错误次数过多，当前 IP 已封禁 1 小时", 429);
+  }
+
+  throw new ApiError("INVALID_PASSWORD", `密码错误，还可尝试 ${passwordAttemptLimit - failedCount} 次`, 403);
+}
+
+/** Hashes the connecting IP so the password-ban table does not store raw addresses. */
+async function articlePasswordVisitorHash(request: Request, sessionSecret: string) {
+  const ip = request.headers.get("CF-Connecting-IP") ?? request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim() ?? "unknown";
+  return sign(`article-password:${ip}`, sessionSecret);
 }
 
 /** Validates and normalizes message form input for guests and administrators. */

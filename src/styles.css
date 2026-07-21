@@ -1335,7 +1335,7 @@ textarea {
 
 .segmented {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 6px;
   padding: 4px;
   border: 1px solid #d8d5ca;

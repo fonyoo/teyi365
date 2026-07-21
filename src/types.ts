@@ -1,4 +1,4 @@
-export type Visibility = "public" | "private";
+export type Visibility = "public" | "private" | "password";
 
 export interface Tag {
   id: number;
@@ -21,6 +21,7 @@ export interface ArticleSummary {
 
 export interface Article extends ArticleSummary {
   content: string;
+  accessPassword?: string;
 }
 
 export interface ArticleListResponse {
@@ -43,6 +44,7 @@ export interface ArticleInput {
   coverImageUrl: string;
   content: string;
   visibility: Visibility;
+  accessPassword: string;
   tags: string[];
 }
 
