@@ -2,6 +2,8 @@
 
 一个使用 Cloudflare 免费服务部署的简约个人博客：Cloudflare Pages 托管前端，Pages Functions 提供 API，D1 保存文章、标签和留言数据。
 
+> Fork 后准备部署自己的实例？请阅读：[Cloudflare 快速部署指南](docs/CLOUDFLARE_DEPLOY.md)。
+
 ## 本地开发
 
 ### 第一次启动
