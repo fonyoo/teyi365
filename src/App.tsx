@@ -52,6 +52,7 @@ import type {
   Visibility
 } from "./types";
 import { articleToInput, emptyArticleInput, formatArticleTimeTitle, formatDate, sampleMarkdown } from "./utils";
+import { imageHostLabels, markdownImage, prepareImageForUpload, uploadImageWithFallback } from "./imageUpload";
 import type { Options as RehypeSanitizeOptions } from "rehype-sanitize";
 
 type View = "list" | "article" | "editor" | "guestbook";
@@ -880,6 +881,8 @@ export function App() {
               availableTags={tagOptions}
               editing={Boolean(editingSlug)}
               submitting={articleSubmitting}
+              onError={setError}
+              onNotice={setNotice}
               onDraftChange={setDraft}
               onSubmit={submitDraft}
               onCancel={() => (activeArticle ? setView("article") : showList())}
@@ -1601,13 +1604,96 @@ function Editor(props: {
   availableTags: TagType[];
   editing: boolean;
   submitting: boolean;
+  onError: (message: string) => void;
+  onNotice: (message: string) => void;
   onDraftChange: (draft: ArticleInput) => void;
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   onCancel: () => void;
 }) {
+  const [uploadingTarget, setUploadingTarget] = useState<"cover" | "content" | "">("");
+  const draftRef = useRef(props.draft);
+  const contentTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    draftRef.current = props.draft;
+  }, [props.draft]);
+
+  /** Updates the draft and its synchronous ref used by asynchronous uploads. */
+  function updateDraft(nextDraft: ArticleInput) {
+    draftRef.current = nextDraft;
+    props.onDraftChange(nextDraft);
+  }
+
   const setField = <Key extends keyof ArticleInput>(key: Key, value: ArticleInput[Key]) => {
-    props.onDraftChange({ ...props.draft, [key]: value });
+    updateDraft({ ...draftRef.current, [key]: value });
   };
+
+  /** Uploads a pasted image and writes its URL into the list-image field. */
+  async function uploadCoverImage(file: File) {
+    if (uploadingTarget) {
+      props.onError("请等待当前图片上传完成");
+      return;
+    }
+
+    setUploadingTarget("cover");
+    try {
+      const prepared = await prepareImageForUpload(file);
+      const result = await uploadImageWithFallback(prepared.file);
+      setField("coverImageUrl", result.url);
+      props.onNotice(`${prepared.convertedToWebp ? "已转为 WebP，" : ""}图片已上传到 ${imageHostLabels[result.provider]}`);
+    } catch (error) {
+      props.onError(asErrorMessage(error));
+    } finally {
+      setUploadingTarget("");
+    }
+  }
+
+  /** Inserts a temporary Markdown marker and replaces it with the uploaded image URL. */
+  async function uploadContentImage(file: File, selectionStart: number, selectionEnd: number) {
+    if (uploadingTarget) {
+      props.onError("请等待当前图片上传完成");
+      return;
+    }
+
+    const markerId = `uploading-${crypto.randomUUID()}`; // Unique marker preserved across asynchronous state updates.
+    const marker = markdownImage(markerId, "图片上传中…");
+    const content = draftRef.current.content;
+    updateDraft({ ...draftRef.current, content: `${content.slice(0, selectionStart)}${marker}${content.slice(selectionEnd)}` });
+    setUploadingTarget("content");
+
+    try {
+      const prepared = await prepareImageForUpload(file);
+      const result = await uploadImageWithFallback(prepared.file);
+      updateDraft({ ...draftRef.current, content: draftRef.current.content.replace(marker, markdownImage(result.url)) });
+      props.onNotice(`${prepared.convertedToWebp ? "已转为 WebP，" : ""}图片已上传到 ${imageHostLabels[result.provider]}`);
+    } catch (error) {
+      updateDraft({ ...draftRef.current, content: draftRef.current.content.replace(marker, "") });
+      props.onError(asErrorMessage(error));
+    } finally {
+      setUploadingTarget("");
+      window.requestAnimationFrame(() => contentTextareaRef.current?.focus());
+    }
+  }
+
+  /** Captures an image from the cover input clipboard without affecting normal text paste. */
+  function handleCoverPaste(event: React.ClipboardEvent<HTMLInputElement>) {
+    const image = clipboardImage(event.clipboardData);
+    if (!image) {
+      return;
+    }
+    event.preventDefault();
+    void uploadCoverImage(image);
+  }
+
+  /** Captures an image from the Markdown textarea and remembers its insertion point. */
+  function handleContentPaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const image = clipboardImage(event.clipboardData);
+    if (!image) {
+      return;
+    }
+    event.preventDefault();
+    void uploadContentImage(image, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+  }
 
   return (
     <form className="editor" onSubmit={props.onSubmit}>
@@ -1617,12 +1703,12 @@ function Editor(props: {
           <h1>{props.editing ? "编辑文章" : "新增文章"}</h1>
         </div>
         <div className="tool-group">
-          <button className="text-button ghost" type="button" onClick={props.onCancel} disabled={props.submitting}>
+          <button className="text-button ghost" type="button" onClick={props.onCancel} disabled={props.submitting || Boolean(uploadingTarget)}>
             取消
           </button>
-          <button className="text-button primary" type="submit" disabled={props.submitting}>
-            {props.submitting && <ButtonSpinner />}
-            {props.submitting ? "保存中..." : "保存"}
+          <button className="text-button primary" type="submit" disabled={props.submitting || Boolean(uploadingTarget)}>
+            {(props.submitting || uploadingTarget) && <ButtonSpinner />}
+            {props.submitting ? "保存中..." : uploadingTarget ? "图片上传中..." : "保存"}
           </button>
         </div>
       </div>
@@ -1656,8 +1742,11 @@ function Editor(props: {
                 maxLength={2048}
                 value={props.draft.coverImageUrl}
                 onChange={(event) => setField("coverImageUrl", event.target.value)}
+                onPaste={handleCoverPaste}
                 placeholder="图片 URL，可留空"
+                disabled={Boolean(uploadingTarget)}
               />
+              <span className="image-upload-hint">可直接粘贴图片，自动转 WebP 并上传</span>
             </label>
             <TagSelector
               selectedTags={props.draft.tags}
@@ -1669,14 +1758,14 @@ function Editor(props: {
               <SegmentedVisibility
                 value={props.draft.visibility}
                 onChange={(value) => {
-                  const nextDraft = { ...props.draft, visibility: value };
+                  const nextDraft = { ...draftRef.current, visibility: value };
                   if (value === "password" && !nextDraft.accessPassword) {
                     nextDraft.accessPassword = createDefaultArticlePassword();
                   }
                   if (value !== "password") {
                     nextDraft.accessPassword = "";
                   }
-                  props.onDraftChange(nextDraft);
+                  updateDraft(nextDraft);
                 }}
               />
             </fieldset>
@@ -1699,11 +1788,15 @@ function Editor(props: {
           <div className="editor-compose">
             <label className="content-field">
               Markdown
+              <span className="image-upload-hint">在光标处粘贴图片，将自动插入 Markdown 图片链接</span>
               <textarea
+                ref={contentTextareaRef}
                 required
                 value={props.draft.content}
                 onChange={(event) => setField("content", event.target.value)}
+                onPaste={handleContentPaste}
                 spellCheck={false}
+                disabled={Boolean(uploadingTarget)}
               />
             </label>
           </div>
@@ -1856,6 +1949,11 @@ function SegmentedVisibility(props: { value: Visibility; onChange: (value: Visib
       </button>
     </div>
   );
+}
+
+/** Returns the first pasted clipboard image, if the paste contains one. */
+function clipboardImage(clipboardData: DataTransfer) {
+  return Array.from(clipboardData.files).find((file) => file.type.startsWith("image/")) ?? null;
 }
 
 /** Creates a four-character alphanumeric password for a newly protected article. */

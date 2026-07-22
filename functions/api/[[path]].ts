@@ -6,6 +6,7 @@ interface Env {
 }
 
 type Visibility = "public" | "private" | "password";
+type ImageHostProvider = "catbox" | "pixeldrain";
 
 interface ArticleRow {
   id: number;
@@ -84,6 +85,7 @@ type ApiErrorCode =
   | "RATE_LIMIT"
   | "PASSWORD_REQUIRED"
   | "INVALID_PASSWORD"
+  | "UPLOAD_FAILED"
   | "METHOD_NOT_ALLOWED"
   | "SERVER_ERROR";
 
@@ -99,6 +101,14 @@ const messageContentMaxLength = 500; // Maximum plain-text message length.
 const passwordAttemptLimit = 5; // Failed article-password attempts allowed per visitor window.
 const passwordAttemptWindowMs = 60 * 60 * 1000; // Failed-attempt window length.
 const passwordBanMs = 60 * 60 * 1000; // IP ban length after too many failed attempts.
+const imageUploadMaxBytes = 10 * 1024 * 1024; // Maximum converted image size accepted by the upload proxy.
+const imageProviderTimeoutMs = 15 * 1000; // Maximum wait for a third-party image host.
+const imageExtensions: Record<string, string> = {
+  "image/gif": "gif",
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp"
+};
 
 export const onRequest: PagesFunction<Env> = async (context) => {
   try {
@@ -111,6 +121,10 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 
     if (segments[0] === "articles") {
       return await handleArticles(context, segments.slice(1));
+    }
+
+    if (segments[0] === "uploads") {
+      return await handleUploads(context, segments.slice(1));
     }
 
     if (segments[0] === "article-search" && context.request.method === "GET") {
@@ -140,6 +154,80 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     return jsonError("SERVER_ERROR", "服务器开小差了，请稍后再试", 500);
   }
 };
+
+/** Routes authenticated image uploads to third-party hosts. */
+async function handleUploads(context: EventContext<Env, string, unknown>, segments: string[]) {
+  const { request, env } = context;
+
+  if (segments.length === 0 && request.method === "POST") {
+    await requireAuth(request, env);
+    const provider = new URL(request.url).searchParams.get("provider") as ImageHostProvider | null;
+    if (!provider || !["catbox", "pixeldrain"].includes(provider)) {
+      throw new ApiError("BAD_REQUEST", "不支持的图床", 400);
+    }
+
+    const formData = await request.formData();
+    const file = formData.get("file");
+    if (!(file instanceof File)) {
+      throw new ApiError("BAD_REQUEST", "请选择要上传的图片", 400);
+    }
+
+    const extension = imageExtensions[file.type];
+    if (!extension) {
+      throw new ApiError("BAD_REQUEST", "仅支持 JPEG、PNG、WebP 和 GIF 图片", 400);
+    }
+
+    if (file.size <= 0 || file.size > imageUploadMaxBytes) {
+      throw new ApiError("BAD_REQUEST", "图片大小需要在 10 MB 以内", 400);
+    }
+
+    const url = await uploadImageToProvider(provider, file, extension);
+    return json({ url, provider });
+  }
+
+  return jsonError("METHOD_NOT_ALLOWED", "不支持的图片请求", 405);
+}
+
+/** Uploads one image to the selected storage provider. */
+async function uploadImageToProvider(
+  provider: ImageHostProvider,
+  file: File,
+  extension: string
+) {
+  if (provider === "catbox") {
+    const formData = new FormData();
+    formData.set("reqtype", "fileupload");
+    formData.set("fileToUpload", file, `image.${extension}`);
+    const response = await fetchWithTimeout("https://catbox.moe/user/api.php", { method: "POST", body: formData });
+    const url = (await response.text()).trim();
+    if (!response.ok || !/^https:\/\/files\.catbox\.moe\/[A-Za-z0-9._-]+$/.test(url)) {
+      throw new ApiError("UPLOAD_FAILED", "Catbox 上传失败", 502);
+    }
+    return url;
+  }
+
+  const formData = new FormData();
+  formData.set("file", file, `image.${extension}`);
+  const response = await fetchWithTimeout("https://pixeldrain.com/api/file", { method: "POST", body: formData });
+  const result = (await response.json().catch(() => ({}))) as { id?: string; success?: boolean };
+  if (!response.ok || !result.success || !result.id || !/^[A-Za-z0-9_-]+$/.test(result.id)) {
+    throw new ApiError("UPLOAD_FAILED", "Pixeldrain 上传失败", 502);
+  }
+  return `https://pixeldrain.com/api/file/${result.id}`;
+}
+
+/** Applies a bounded timeout to third-party image-host requests. */
+async function fetchWithTimeout(url: string, init: RequestInit) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), imageProviderTimeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch {
+    throw new ApiError("UPLOAD_FAILED", "图床连接失败，请尝试其他图床", 502);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 async function handleAuth(context: EventContext<Env, string, unknown>, segments: string[]) {
   const { request, env } = context;

@@ -1192,6 +1192,13 @@ label {
   font-weight: 800;
 }
 
+.image-upload-hint {
+  color: #7a8179;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
 input,
 textarea {
   width: 100%;

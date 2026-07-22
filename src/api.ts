@@ -7,6 +7,8 @@ import type {
   GuestbookCaptcha,
   GuestbookInput,
   GuestbookMessage,
+  ImageHostProvider,
+  ImageUploadResponse,
   Tag
 } from "./types";
 
@@ -110,6 +112,22 @@ export async function deleteArticle(slug: string) {
   return requestJson<{ ok: boolean }>(`/api/articles/${encodeURIComponent(slug)}`, {
     method: "DELETE"
   });
+}
+
+/** Uploads one image to a specific provider through the authenticated API proxy. */
+export async function uploadImageFile(file: File, provider: ImageHostProvider) {
+  const formData = new FormData();
+  formData.set("file", file, file.name);
+  const response = await fetch(`/api/uploads?provider=${encodeURIComponent(provider)}`, {
+    method: "POST",
+    credentials: "include",
+    body: formData
+  });
+  const data = (await response.json().catch(() => ({}))) as ImageUploadResponse & ApiErrorPayload;
+  if (!response.ok) {
+    throw new ApiRequestError(data.error?.message ?? "图片上传失败", data.error?.code ?? "UNKNOWN");
+  }
+  return data;
 }
 
 export async function listMessages() {
