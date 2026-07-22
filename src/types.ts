@@ -1,5 +1,5 @@
 export type Visibility = "public" | "private" | "password";
-export type ImageHostProvider = "imgbb" | "pixhost" | "catbox" | "pixeldrain";
+export type ImageHostProvider = "imgbb" | "pixhost";
 
 export interface ImageUploadResponse {
   url: string;

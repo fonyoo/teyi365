@@ -231,11 +231,11 @@ node -e "console.log(crypto.randomUUID() + crypto.randomUUID())"
 - PNG、JPEG 等静态图片会转换为 WebP，最长边限制为 2560px，质量为 0.86。
 - GIF 保留原格式，避免动画丢失。
 - 转换后的图片最大为 10 MB。
-- 图床顺序为 ImgBB、Pixhost、Catbox、Pixeldrain。
+- 图床顺序为 ImgBB、Pixhost。
 - 某个图床失败后，浏览器会在 `localStorage` 记录失败时间，30 分钟内跳过该图床。
 - Pages Function 只负责转发上传，D1 和项目仓库只保存图床返回的 URL，不保存图片文件。
 
-ImgBB 需要配置 `IMGBB_API_KEY`。Pixhost 使用其[公开上传 API](https://pixhost.to/api/index.html#upload-image)，无需账号；Catbox 和 Pixeldrain 是匿名备用，但可能拒绝部分 Cloudflare 出口请求。
+ImgBB 需要配置 `IMGBB_API_KEY`。Pixhost 使用其[公开上传 API](https://pixhost.to/api/index.html#upload-image)，无需账号，作为 ImgBB 的匿名备用。
 
 ### 6. 绑定 D1 数据库
 

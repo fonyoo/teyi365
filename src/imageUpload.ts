@@ -1,12 +1,10 @@
 import { ApiRequestError, uploadImageFile } from "./api";
 import type { ImageHostProvider, ImageUploadResponse } from "./types";
 
-export const imageHostProviders: ImageHostProvider[] = ["imgbb", "pixhost", "catbox", "pixeldrain"];
+export const imageHostProviders: ImageHostProvider[] = ["imgbb", "pixhost"];
 export const imageHostLabels: Record<ImageHostProvider, string> = {
   imgbb: "ImgBB",
-  pixhost: "Pixhost",
-  catbox: "Catbox",
-  pixeldrain: "Pixeldrain"
+  pixhost: "Pixhost"
 };
 
 const imageHostFailureStorageKey = "blog:imageHostFailures"; // Browser key for provider cooldown timestamps.

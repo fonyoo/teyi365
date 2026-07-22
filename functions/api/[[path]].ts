@@ -7,7 +7,7 @@ interface Env {
 }
 
 type Visibility = "public" | "private" | "password";
-type ImageHostProvider = "imgbb" | "pixhost" | "catbox" | "pixeldrain";
+type ImageHostProvider = "imgbb" | "pixhost";
 
 interface ArticleRow {
   id: number;
@@ -163,7 +163,7 @@ async function handleUploads(context: EventContext<Env, string, unknown>, segmen
   if (segments.length === 0 && request.method === "POST") {
     await requireAuth(request, env);
     const provider = new URL(request.url).searchParams.get("provider") as ImageHostProvider | null;
-    if (!provider || !["imgbb", "pixhost", "catbox", "pixeldrain"].includes(provider)) {
+    if (!provider || !["imgbb", "pixhost"].includes(provider)) {
       throw new ApiError("BAD_REQUEST", "不支持的图床", 400);
     }
 
@@ -214,43 +214,20 @@ async function uploadImageToProvider(
     return url;
   }
 
-  if (provider === "pixhost") {
-    const formData = new FormData();
-    formData.set("img", file, `image.${extension}`);
-    formData.set("content_type", "0");
-    formData.set("max_th_size", "500");
-    const response = await fetchWithTimeout("https://api.pixhost.to/images", {
-      method: "POST",
-      headers: { Accept: "application/json" },
-      body: formData
-    });
-    const result = (await response.json().catch(() => ({}))) as { th_url?: string };
-    if (!response.ok || !result.th_url) {
-      throw new ApiError("UPLOAD_FAILED", "Pixhost 上传失败", 502);
-    }
-    return pixhostFullImageUrl(result.th_url);
-  }
-
-  if (provider === "catbox") {
-    const formData = new FormData();
-    formData.set("reqtype", "fileupload");
-    formData.set("fileToUpload", file, `image.${extension}`);
-    const response = await fetchWithTimeout("https://catbox.moe/user/api.php", { method: "POST", body: formData });
-    const url = (await response.text()).trim();
-    if (!response.ok || !/^https:\/\/files\.catbox\.moe\/[A-Za-z0-9._-]+$/.test(url)) {
-      throw new ApiError("UPLOAD_FAILED", "Catbox 上传失败", 502);
-    }
-    return url;
-  }
-
   const formData = new FormData();
-  formData.set("file", file, `image.${extension}`);
-  const response = await fetchWithTimeout("https://pixeldrain.com/api/file", { method: "POST", body: formData });
-  const result = (await response.json().catch(() => ({}))) as { id?: string; success?: boolean };
-  if (!response.ok || !result.success || !result.id || !/^[A-Za-z0-9_-]+$/.test(result.id)) {
-    throw new ApiError("UPLOAD_FAILED", "Pixeldrain 上传失败", 502);
+  formData.set("img", file, `image.${extension}`);
+  formData.set("content_type", "0");
+  formData.set("max_th_size", "500");
+  const response = await fetchWithTimeout("https://api.pixhost.to/images", {
+    method: "POST",
+    headers: { Accept: "application/json" },
+    body: formData
+  });
+  const result = (await response.json().catch(() => ({}))) as { th_url?: string };
+  if (!response.ok || !result.th_url) {
+    throw new ApiError("UPLOAD_FAILED", "Pixhost 上传失败", 502);
   }
-  return `https://pixeldrain.com/api/file/${result.id}`;
+  return pixhostFullImageUrl(result.th_url);
 }
 
 /** Converts a Pixhost thumbnail URL into its corresponding full-resolution image URL. */
