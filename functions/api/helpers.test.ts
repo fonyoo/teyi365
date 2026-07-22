@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildSearchSnippet,
+  formatArticleResponse,
   remainingCooldownSeconds,
   normalizedTags,
   slugify,
@@ -13,6 +14,28 @@ import {
 } from "./[[path]]";
 
 describe("api helpers", () => {
+  it("formats public article view counts without exposing visitor details", () => {
+    const article = formatArticleResponse(
+      {
+        id: 1,
+        slug: "post-1",
+        title: "Post",
+        excerpt: "Summary",
+        cover_image_url: "",
+        content_md: "Body",
+        visibility: "public",
+        access_password: "",
+        view_count: 7,
+        created_at: "2026-07-22 08:00:00",
+        updated_at: "2026-07-22 08:00:00"
+      },
+      []
+    );
+
+    expect(article.viewCount).toBe(7);
+    expect(JSON.stringify(article)).not.toMatch(/ipAddress|userAgent|visitorHash/);
+  });
+
   it("creates readable slugs for English and Chinese titles", () => {
     expect(slugify("Hello Cloudflare Pages!")).toBe("hello-cloudflare-pages");
     expect(slugify("我的 第一篇文章")).toBe("我的-第一篇文章");

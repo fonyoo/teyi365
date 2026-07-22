@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  articleViewCutoff,
   articleViewVisitorHash,
+  buildArticleViewClaimCleanup,
+  buildStatisticsWhere,
   escapeStatisticsLike,
+  formatArticleViewRecord,
   parseArticleViewDevice,
   parseStatisticsFilters
 } from "./articleStatistics";
@@ -90,6 +94,79 @@ describe("article statistics helpers", () => {
 
   it("escapes SQL LIKE wildcard characters and backslashes", () => {
     expect(escapeStatisticsLike("100%_ok\\done")).toBe("100\\%\\_ok\\\\done");
+  });
+
+  it("uses an exact 30 minute cooldown", () => {
+    expect(articleViewCutoff(new Date("2026-07-22T12:30:00.000Z"))).toBe("2026-07-22 12:00:00.000");
+    expect(articleViewCutoff(new Date("2026-07-22T12:30:00.987Z"))).toBe("2026-07-22 12:00:00.987");
+  });
+
+  it("builds a conditional cleanup for only the failed view claim", () => {
+    expect(buildArticleViewClaimCleanup(7, "visitor-hash", "2026-07-22 12:30:00.123")).toEqual({
+      sql: "DELETE FROM article_view_visitors WHERE article_id = ? AND visitor_hash = ? AND last_counted_at = ?",
+      bindings: [7, "visitor-hash", "2026-07-22 12:30:00.123"]
+    });
+  });
+
+  it("builds parameterized statistics filters", () => {
+    expect(
+      buildStatisticsWhere({
+        article: "post-1",
+        ip: "203.0.113.%",
+        device: "Chrome_126",
+        from: "2026-07-01 00:00:00",
+        toExclusive: "2026-07-23 00:00:00",
+        page: 1
+      })
+    ).toEqual({
+      where:
+        "WHERE a.slug = ? AND av.ip_address LIKE ? ESCAPE '\\' AND (av.device_type LIKE ? ESCAPE '\\' OR av.os_name LIKE ? ESCAPE '\\' OR av.browser_name LIKE ? ESCAPE '\\' OR av.user_agent LIKE ? ESCAPE '\\') AND av.viewed_at >= ? AND av.viewed_at < ?",
+      bindings: [
+        "post-1",
+        "%203.0.113.\\%%",
+        "%Chrome\\_126%",
+        "%Chrome\\_126%",
+        "%Chrome\\_126%",
+        "%Chrome\\_126%",
+        "2026-07-01 00:00:00",
+        "2026-07-23 00:00:00"
+      ]
+    });
+  });
+
+  it("omits the WHERE clause when statistics filters are empty", () => {
+    expect(
+      buildStatisticsWhere({
+        article: "",
+        ip: "",
+        device: "",
+        from: "",
+        toExclusive: "",
+        page: 1
+      })
+    ).toEqual({ where: "", bindings: [] });
+  });
+
+  it("formats administrator records with a validated device type and no visitor hash", () => {
+    const record = formatArticleViewRecord({
+      id: 3,
+      slug: "post-1",
+      title: "Post",
+      ip_address: "203.0.113.8",
+      user_agent: "test-agent",
+      device_type: "console",
+      os_name: "unknown",
+      browser_name: "unknown",
+      viewed_at: "2026-07-22 08:00:00"
+    });
+
+    expect(record).toMatchObject({
+      id: 3,
+      articleSlug: "post-1",
+      ipAddress: "203.0.113.8",
+      deviceType: "unknown"
+    });
+    expect(JSON.stringify(record)).not.toContain("visitorHash");
   });
 
   it("parses trimmed bounded filters and an inclusive date range", () => {

@@ -1,3 +1,10 @@
+import {
+  StatisticsFilterError,
+  listArticleViewStatistics,
+  parseStatisticsFilters,
+  recordArticleView
+} from "./articleStatistics";
+
 interface Env {
   DB: D1Database;
   ADMIN_USERNAME: string;
@@ -18,6 +25,7 @@ interface ArticleRow {
   content_md: string;
   visibility: Visibility;
   access_password: string;
+  view_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -124,6 +132,10 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       return await handleArticles(context, segments.slice(1));
     }
 
+    if (segments[0] === "statistics") {
+      return await handleStatistics(context, segments.slice(1));
+    }
+
     if (segments[0] === "uploads") {
       return await handleUploads(context, segments.slice(1));
     }
@@ -155,6 +167,26 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     return jsonError("SERVER_ERROR", "服务器开小差了，请稍后再试", 500);
   }
 };
+
+/** Serves permanent article-view details only after administrator authentication. */
+async function handleStatistics(context: EventContext<Env, string, unknown>, segments: string[]) {
+  const { request, env } = context;
+  await requireAuth(request, env);
+
+  if (segments.length > 0 || request.method !== "GET") {
+    return jsonError("METHOD_NOT_ALLOWED", "不支持的统计请求", 405);
+  }
+
+  try {
+    const filters = parseStatisticsFilters(new URL(request.url));
+    return json(await listArticleViewStatistics(env.DB, filters));
+  } catch (error) {
+    if (error instanceof StatisticsFilterError) {
+      throw new ApiError("BAD_REQUEST", error.message, 400);
+    }
+    throw error;
+  }
+}
 
 /** Routes authenticated image uploads to third-party hosts. */
 async function handleUploads(context: EventContext<Env, string, unknown>, segments: string[]) {
@@ -345,6 +377,16 @@ async function handleArticles(context: EventContext<Env, string, unknown>, segme
     if (!authenticated && article.access_password) {
       const suppliedPassword = new URL(request.url).searchParams.get("password") ?? "";
       await verifyArticlePassword(request, env.DB, env.SESSION_SECRET, article.access_password, suppliedPassword);
+    }
+
+    if (!authenticated) {
+      try {
+        if (await recordArticleView(env.DB, article.id, request, env.SESSION_SECRET)) {
+          article.view_count = Number(article.view_count ?? 0) + 1;
+        }
+      } catch (error) {
+        console.error("Failed to record article view", error);
+      }
     }
 
     return json({ article: await articleWithTags(env.DB, article, true, authenticated) });
@@ -623,7 +665,7 @@ async function listArticles(
     ${where}
   `;
   const query = `
-    SELECT a.id, a.slug, a.title, a.excerpt, a.cover_image_url, a.content_md, a.visibility, a.access_password, a.created_at, a.updated_at
+    SELECT a.id, a.slug, a.title, a.excerpt, a.cover_image_url, a.content_md, a.visibility, a.access_password, a.view_count, a.created_at, a.updated_at
     FROM articles a
     ${joinTag}
     ${where}
@@ -703,7 +745,7 @@ async function createArticle(db: D1Database, input: ArticleInput) {
       `
         INSERT INTO articles (slug, title, excerpt, cover_image_url, content_md, visibility, access_password)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-        RETURNING id, slug, title, excerpt, cover_image_url, content_md, visibility, access_password, created_at, updated_at
+        RETURNING id, slug, title, excerpt, cover_image_url, content_md, visibility, access_password, view_count, created_at, updated_at
       `
     )
     .bind(slug, input.title, input.excerpt ?? "", input.coverImageUrl ?? "", input.content, storedVisibility(input.visibility), input.accessPassword ?? "")
@@ -730,7 +772,7 @@ async function updateArticle(db: D1Database, slug: string, input: ArticleInput) 
         UPDATE articles
         SET title = ?, excerpt = ?, cover_image_url = ?, content_md = ?, visibility = ?, access_password = ?, updated_at = datetime('now')
         WHERE slug = ?
-        RETURNING id, slug, title, excerpt, cover_image_url, content_md, visibility, access_password, created_at, updated_at
+        RETURNING id, slug, title, excerpt, cover_image_url, content_md, visibility, access_password, view_count, created_at, updated_at
       `
     )
     .bind(input.title, input.excerpt ?? "", input.coverImageUrl ?? "", input.content, storedVisibility(input.visibility), input.accessPassword ?? "", slug)
@@ -782,8 +824,19 @@ async function cleanupOrphanedTags(db: D1Database) {
     .run();
 }
 
+/** Loads article tags before delegating to the pure public-response formatter. */
 async function articleWithTags(db: D1Database, row: ArticleRow, includeContent = true, includePassword = false) {
   const tags = await getArticleTags(db, row.id);
+  return formatArticleResponse(row, tags, includeContent, includePassword);
+}
+
+/** Formats an article row without including any private visitor statistics fields. */
+export function formatArticleResponse(
+  row: ArticleRow,
+  tags: TagRow[],
+  includeContent = true,
+  includePassword = false
+) {
   return {
     slug: row.slug,
     title: row.title,
@@ -792,6 +845,7 @@ async function articleWithTags(db: D1Database, row: ArticleRow, includeContent =
     content: includeContent ? row.content_md : undefined,
     visibility: row.access_password ? "password" : row.visibility,
     ...(includePassword && row.access_password ? { accessPassword: row.access_password } : {}),
+    viewCount: Number(row.view_count ?? 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     tags
@@ -802,7 +856,7 @@ async function getArticleBySlug(db: D1Database, slug: string) {
   return db
     .prepare(
       `
-        SELECT id, slug, title, excerpt, cover_image_url, content_md, visibility, access_password, created_at, updated_at
+        SELECT id, slug, title, excerpt, cover_image_url, content_md, visibility, access_password, view_count, created_at, updated_at
         FROM articles
         WHERE slug = ?
       `

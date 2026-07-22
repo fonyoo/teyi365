@@ -12,6 +12,21 @@ export interface StatisticsFilters {
 }
 
 const statisticsMaxPage = 1_000_000; // Largest page accepted from administrator queries.
+const articleViewCooldownSeconds = 30 * 60; // Rolling cooldown before one visitor can count the same article again.
+const statisticsPageSize = 20; // Fixed number of article-view records returned per administrator page.
+
+/** Internal row selected for an administrator article-view record. */
+interface ArticleViewQueryRow {
+  id: number;
+  slug: string;
+  title: string;
+  ip_address: string;
+  user_agent: string;
+  device_type: string;
+  os_name: string;
+  browser_name: string;
+  viewed_at: string;
+}
 
 /** Identifies invalid administrator statistics query parameters. */
 export class StatisticsFilterError extends Error {}
@@ -61,6 +76,179 @@ export async function articleViewVisitorHash(secret: string, ipAddress: string, 
 /** Escapes values used with a SQL LIKE expression and an explicit backslash escape. */
 export function escapeStatisticsLike(value: string) {
   return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
+/** Returns the inclusive cooldown boundary used by the conditional visitor claim. */
+export function articleViewCutoff(now: Date) {
+  return toSqliteTimestamp(new Date(now.getTime() - articleViewCooldownSeconds * 1000));
+}
+
+/** Builds the exact claim cleanup used after a permanent view batch fails. */
+export function buildArticleViewClaimCleanup(articleId: number, visitorHash: string, countedAt: string) {
+  return {
+    sql: "DELETE FROM article_view_visitors WHERE article_id = ? AND visitor_hash = ? AND last_counted_at = ?",
+    bindings: [articleId, visitorHash, countedAt]
+  };
+}
+
+/** Builds bound administrator filters without interpolating any user-provided values. */
+export function buildStatisticsWhere(filters: StatisticsFilters) {
+  const clauses: string[] = [];
+  const bindings: string[] = [];
+
+  if (filters.article) {
+    clauses.push("a.slug = ?");
+    bindings.push(filters.article);
+  }
+  if (filters.ip) {
+    clauses.push("av.ip_address LIKE ? ESCAPE '\\'");
+    bindings.push(`%${escapeStatisticsLike(filters.ip)}%`);
+  }
+  if (filters.device) {
+    const match = `%${escapeStatisticsLike(filters.device)}%`; // Literal substring shared by all device fields.
+    clauses.push(
+      "(av.device_type LIKE ? ESCAPE '\\' OR av.os_name LIKE ? ESCAPE '\\' OR av.browser_name LIKE ? ESCAPE '\\' OR av.user_agent LIKE ? ESCAPE '\\')"
+    );
+    bindings.push(match, match, match, match);
+  }
+  if (filters.from) {
+    clauses.push("av.viewed_at >= ?");
+    bindings.push(filters.from);
+  }
+  if (filters.toExclusive) {
+    clauses.push("av.viewed_at < ?");
+    bindings.push(filters.toExclusive);
+  }
+
+  return { where: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "", bindings };
+}
+
+/** Records one eligible article view and atomically keeps its detail row and counter aligned. */
+export async function recordArticleView(
+  db: D1Database,
+  articleId: number,
+  request: Request,
+  secret: string,
+  now = new Date()
+) {
+  const ipAddress =
+    request.headers.get("CF-Connecting-IP")?.trim() ||
+    request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim() ||
+    "unknown";
+  const userAgent = request.headers.get("User-Agent")?.trim() || "";
+  const visitorHash = await articleViewVisitorHash(secret, ipAddress, userAgent);
+  const countedAt = toSqliteTimestamp(now); // One timestamp shared by the cooldown claim and permanent detail.
+  const claim = await db
+    .prepare(
+      `
+        INSERT INTO article_view_visitors (article_id, visitor_hash, last_counted_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(article_id, visitor_hash) DO UPDATE SET last_counted_at = excluded.last_counted_at
+        WHERE article_view_visitors.last_counted_at <= ?
+        RETURNING article_id
+      `
+    )
+    .bind(articleId, visitorHash, countedAt, articleViewCutoff(now))
+    .first<{ article_id: number }>();
+
+  if (!claim) return false;
+
+  const device = parseArticleViewDevice(userAgent);
+  try {
+    await db.batch([
+      db
+        .prepare(
+          `
+            INSERT INTO article_views
+              (article_id, ip_address, visitor_hash, user_agent, device_type, os_name, browser_name, viewed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `
+        )
+        .bind(
+          articleId,
+          ipAddress,
+          visitorHash,
+          userAgent,
+          device.deviceType,
+          device.osName,
+          device.browserName,
+          countedAt
+        ),
+      db.prepare("UPDATE articles SET view_count = view_count + 1 WHERE id = ?").bind(articleId)
+    ]);
+  } catch (error) {
+    const cleanup = buildArticleViewClaimCleanup(articleId, visitorHash, countedAt);
+    try {
+      await db.prepare(cleanup.sql).bind(...cleanup.bindings).run();
+    } catch (cleanupError) {
+      console.error("Failed to compensate article view claim", cleanupError);
+    }
+    throw error;
+  }
+  return true;
+}
+
+/** Lists permanent view details and filter options for an authenticated administrator. */
+export async function listArticleViewStatistics(db: D1Database, filters: StatisticsFilters) {
+  const { where, bindings } = buildStatisticsWhere(filters);
+  const offset = (filters.page - 1) * statisticsPageSize; // Rows skipped before the requested statistics page.
+  const [count, records, articles] = await Promise.all([
+    db
+      .prepare(`SELECT COUNT(*) AS total FROM article_views av JOIN articles a ON a.id = av.article_id ${where}`)
+      .bind(...bindings)
+      .first<{ total: number }>(),
+    db
+      .prepare(
+        `
+          SELECT av.id, a.slug, a.title, av.ip_address, av.user_agent, av.device_type,
+                 av.os_name, av.browser_name, av.viewed_at
+          FROM article_views av
+          JOIN articles a ON a.id = av.article_id
+          ${where}
+          ORDER BY av.viewed_at DESC, av.id DESC
+          LIMIT ? OFFSET ?
+        `
+      )
+      .bind(...bindings, statisticsPageSize, offset)
+      .all<ArticleViewQueryRow>(),
+    db.prepare("SELECT slug, title FROM articles ORDER BY lower(title), id").all<{ slug: string; title: string }>()
+  ]);
+  const total = Number(count?.total ?? 0); // Total records matching the administrator's filters.
+  const resultRows = records.results ?? []; // Current page rows returned by D1.
+
+  return {
+    records: resultRows.map(formatArticleViewRecord),
+    articles: articles.results ?? [],
+    page: filters.page,
+    limit: statisticsPageSize,
+    total,
+    hasMore: offset + resultRows.length < total
+  };
+}
+
+/** Maps an internal D1 row to the administrator response without exposing visitor hashes. */
+export function formatArticleViewRecord(row: ArticleViewQueryRow) {
+  const deviceType: ArticleViewDeviceType =
+    row.device_type === "desktop" || row.device_type === "mobile" || row.device_type === "tablet"
+      ? row.device_type
+      : "unknown";
+
+  return {
+    id: row.id,
+    articleSlug: row.slug,
+    articleTitle: row.title,
+    ipAddress: row.ip_address,
+    userAgent: row.user_agent,
+    deviceType,
+    osName: row.os_name,
+    browserName: row.browser_name,
+    viewedAt: row.viewed_at
+  };
+}
+
+/** Formats a Date as the normalized UTC text used by SQLite and D1. */
+function toSqliteTimestamp(value: Date) {
+  return value.toISOString().slice(0, 23).replace("T", " ");
 }
 
 /** Validates and normalizes administrator statistics filters from a request URL. */
