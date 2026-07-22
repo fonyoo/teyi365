@@ -558,6 +558,35 @@ button {
   margin-top: 12px;
 }
 
+.article-row-meta,
+.article-view-count {
+  display: inline-flex;
+  align-items: center;
+}
+
+.article-row-meta {
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.article-row-meta .article-date {
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+.article-view-count {
+  gap: 5px;
+  min-width: 82px;
+  color: #7a7f76;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.article-view-count svg {
+  flex: 0 0 auto;
+}
+
 .row-actions {
   display: flex;
   align-items: center;
@@ -1471,6 +1500,10 @@ textarea {
 }
 
 @media (max-width: 820px) {
+  .statistics-nav-button {
+    display: none;
+  }
+
   .topbar {
     padding: 13px 16px;
   }

@@ -6,6 +6,7 @@ import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import {
   ArrowLeft,
+  BarChart3,
   MessageSquareText,
   Eye,
   EyeOff,
@@ -53,9 +54,11 @@ import type {
 } from "./types";
 import { articleToInput, emptyArticleInput, formatArticleTimeTitle, formatDate, sampleMarkdown } from "./utils";
 import { imageHostLabels, markdownImage, prepareImageForUpload, uploadImageWithFallback } from "./imageUpload";
+import { ArticleViewCount } from "./ArticleViewCount";
+import { StatisticsPage } from "./StatisticsPage";
 import type { Options as RehypeSanitizeOptions } from "rehype-sanitize";
 
-type View = "list" | "article" | "editor" | "guestbook";
+type View = "list" | "article" | "editor" | "guestbook" | "statistics";
 interface PasswordPromptState {
   slug: string;
   value: string;
@@ -64,6 +67,7 @@ interface PasswordPromptState {
 const firstArticlePage = 1; // Initial article list page.
 const siteTitle = "仰晨博客"; // Browser title used outside article pages.
 const guestbookPath = "/guestbook"; // Shareable path for the guestbook page.
+const statisticsPath = "/statistics"; // Shareable path for administrator visit statistics.
 const searchDebounceMs = 650; // Delay before querying as the visitor types.
 const minAutoSearchLength = 2; // One-character input stays local to save Cloudflare requests.
 const guestbookCooldownKey = "guestbook:lastSentAt"; // Local storage key for client-side guest cooldown.
@@ -146,7 +150,9 @@ export function App() {
   const guestbookActionRef = useRef("");
   const guestbookCaptchaRefreshingRef = useRef(false);
   const routeActionRef = useRef("");
+  const routeActionOwnerRef = useRef(0);
   const authActionRef = useRef("");
+  const articleOpenRequestId = useRef(0);
 
   useEffect(() => {
     void bootstrap();
@@ -163,7 +169,13 @@ export function App() {
 
   useEffect(() => {
     document.title =
-      view === "article" && activeArticle ? `${siteTitle} - ${activeArticle.title}` : view === "guestbook" ? `${siteTitle} - 留言板` : siteTitle;
+      view === "article" && activeArticle
+        ? `${siteTitle} - ${activeArticle.title}`
+        : view === "guestbook"
+          ? `${siteTitle} - 留言板`
+          : view === "statistics"
+            ? `${siteTitle} - 访问统计`
+            : siteTitle;
   }, [activeArticle, view]);
 
   useEffect(() => {
@@ -228,21 +240,35 @@ export function App() {
   }
 
   async function syncViewFromLocation() {
-    if (window.location.pathname === guestbookPath) {
+    if (window.location.pathname === statisticsPath) {
+      invalidateArticleOpenRequest();
       setActiveArticle(null);
       setEditingSlug(null);
+      setPasswordPrompt(null);
+      setView("statistics");
+      return;
+    }
+
+    if (window.location.pathname === guestbookPath) {
+      invalidateArticleOpenRequest();
+      setActiveArticle(null);
+      setEditingSlug(null);
+      setPasswordPrompt(null);
       setView("guestbook");
       return;
     }
 
     const slug = slugFromPath(window.location.pathname);
     if (!slug) {
+      invalidateArticleOpenRequest();
       setActiveArticle(null);
       setEditingSlug(null);
+      setPasswordPrompt(null);
       setView("list");
       return;
     }
 
+    invalidateArticleOpenRequest();
     await loadArticle(slug, false, new URLSearchParams(window.location.search).get(passwordQueryKey) ?? "");
   }
 
@@ -354,20 +380,33 @@ export function App() {
       return;
     }
 
+    const actionKey = `article-${slug}`; // Display key for this article request.
+    const actionOwner = beginRouteAction(actionKey); // Unique owner for this invocation.
     listScrollY.current = window.scrollY;
-    routeActionRef.current = `article-${slug}`;
-    setRouteAction(routeActionRef.current);
-    await loadArticle(slug, true);
-    routeActionRef.current = "";
-    setRouteAction("");
+    try {
+      await loadArticle(slug, true);
+    } finally {
+      releaseRouteAction(actionOwner, actionKey);
+    }
   }
 
   /** Loads an article and moves the single-page app into article view. */
   async function loadArticle(slug: string, pushUrl: boolean, password = "") {
+    const requestId = articleOpenRequestId.current + 1; // Request allowed to commit the next article route state.
+    articleOpenRequestId.current = requestId;
     setError("");
     setLoading(true);
     try {
       const result = await getArticle(slug, password);
+      if (requestId !== articleOpenRequestId.current) {
+        return;
+      }
+
+      setArticles((currentArticles) =>
+        currentArticles.map((article) =>
+          article.slug === result.article.slug ? { ...article, viewCount: result.article.viewCount } : article
+        )
+      );
       setActiveArticle(result.article);
       setPasswordPrompt(null);
       setView("article");
@@ -382,6 +421,10 @@ export function App() {
       }
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (caught) {
+      if (requestId !== articleOpenRequestId.current) {
+        return;
+      }
+
       if (caught instanceof ApiRequestError && ["PASSWORD_REQUIRED", "INVALID_PASSWORD", "RATE_LIMIT"].includes(caught.code)) {
         setPasswordPrompt({ slug, value: password, error: caught.message });
         setError("");
@@ -393,11 +436,46 @@ export function App() {
         setView("list");
       }
     } finally {
-      setLoading(false);
+      if (requestId === articleOpenRequestId.current) {
+        setLoading(false);
+      }
     }
   }
 
+  /** Starts one uniquely owned asynchronous route action while retaining its display key. */
+  function beginRouteAction(actionKey: string) {
+    const owner = routeActionOwnerRef.current + 1; // Monotonic identity distinct from reusable display keys.
+    routeActionOwnerRef.current = owner;
+    routeActionRef.current = actionKey;
+    setRouteAction(actionKey);
+    return owner;
+  }
+
+  /** Releases a route action only when the completing operation still owns it. */
+  function releaseRouteAction(owner: number, actionKey: string) {
+    if (routeActionOwnerRef.current !== owner || routeActionRef.current !== actionKey) {
+      return;
+    }
+
+    routeActionOwnerRef.current += 1;
+    routeActionRef.current = "";
+    setRouteAction("");
+  }
+
+  /** Prevents in-flight article and route actions from replacing a newer transition. */
+  function invalidateArticleOpenRequest() {
+    articleOpenRequestId.current += 1;
+    routeActionOwnerRef.current += 1;
+    if (routeActionRef.current) {
+      routeActionRef.current = "";
+      setRouteAction("");
+    }
+    setEditingArticleSlug("");
+    setLoading(false);
+  }
+
   function showList(options: { restoreScroll?: boolean } = {}) {
+    invalidateArticleOpenRequest();
     setActiveArticle(null);
     setEditingSlug(null);
     setView("list");
@@ -416,18 +494,39 @@ export function App() {
       return;
     }
 
-    routeActionRef.current = "guestbook";
-    setRouteAction("guestbook");
+    invalidateArticleOpenRequest();
+    const actionKey = "guestbook"; // Display key for this guestbook refresh.
+    const actionOwner = beginRouteAction(actionKey); // Unique owner for this invocation.
     setActiveArticle(null);
     setEditingSlug(null);
+    setPasswordPrompt(null);
     setView("guestbook");
     if (pushUrl && window.location.pathname !== guestbookPath) {
       window.history.pushState(null, "", guestbookPath);
     }
     window.scrollTo({ top: 0, behavior: "smooth" });
-    await refreshGuestbook();
-    routeActionRef.current = "";
-    setRouteAction("");
+    try {
+      await refreshGuestbook();
+    } finally {
+      releaseRouteAction(actionOwner, actionKey);
+    }
+  }
+
+  /** Opens administrator visit statistics while preserving a direct, shareable route. */
+  function showStatistics(pushUrl = true) {
+    if (routeActionRef.current) {
+      return;
+    }
+
+    invalidateArticleOpenRequest();
+    setActiveArticle(null);
+    setEditingSlug(null);
+    setPasswordPrompt(null);
+    setView("statistics");
+    if (pushUrl && window.location.pathname + window.location.search !== statisticsPath) {
+      window.history.pushState(null, "", statisticsPath);
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function newArticle() {
@@ -435,16 +534,20 @@ export function App() {
       return;
     }
 
-    routeActionRef.current = "new-article";
-    setRouteAction("new-article");
+    invalidateArticleOpenRequest();
+    const actionKey = "new-article"; // Display key for this editor preparation.
+    const actionOwner = beginRouteAction(actionKey); // Unique owner for this invocation.
     setEditingSlug(null);
     setDraft({ ...emptyArticleInput, content: sampleMarkdown() });
     setActiveArticle(null);
     void refreshTagOptions()
-      .catch((caught) => setError(asErrorMessage(caught)))
+      .catch((caught) => {
+        if (routeActionOwnerRef.current === actionOwner) {
+          setError(asErrorMessage(caught));
+        }
+      })
       .finally(() => {
-        routeActionRef.current = "";
-        setRouteAction("");
+        releaseRouteAction(actionOwner, actionKey);
       });
     setView("editor");
     if (window.location.pathname !== "/") {
@@ -458,25 +561,41 @@ export function App() {
       return;
     }
 
+    invalidateArticleOpenRequest();
+    const actionOwner = routeActionOwnerRef.current + 1; // Unique owner for this editor-loading invocation.
+    routeActionOwnerRef.current = actionOwner;
     setError("");
     setLoading(true);
     setEditingArticleSlug(slug);
     try {
       const result = await getArticle(slug);
+      if (routeActionOwnerRef.current !== actionOwner) {
+        return;
+      }
+
       setEditingSlug(slug);
       setActiveArticle(result.article);
       setDraft(articleToInput(result.article));
       await refreshTagOptions();
+      if (routeActionOwnerRef.current !== actionOwner) {
+        return;
+      }
+
       setView("editor");
       if (window.location.pathname !== articlePath(result.article.slug)) {
         window.history.pushState(null, "", articlePath(result.article.slug));
       }
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (caught) {
-      setError(asErrorMessage(caught));
+      if (routeActionOwnerRef.current === actionOwner) {
+        setError(asErrorMessage(caught));
+      }
     } finally {
-      setLoading(false);
-      setEditingArticleSlug("");
+      if (routeActionOwnerRef.current === actionOwner) {
+        routeActionOwnerRef.current += 1;
+        setLoading(false);
+        setEditingArticleSlug("");
+      }
     }
   }
 
@@ -746,6 +865,17 @@ export function App() {
           </span>
         </button>
         <nav className="top-actions">
+          {authenticated && (
+            <button
+              className="text-button statistics-nav-button"
+              type="button"
+              onClick={() => showStatistics()}
+              disabled={Boolean(routeAction || editingArticleSlug || articleSubmitting || articleDeleting)}
+            >
+              <BarChart3 size={16} aria-hidden="true" />
+              统计
+            </button>
+          )}
           <button className="text-button" type="button" onClick={() => void showGuestbook()} disabled={Boolean(routeAction)}>
             {routeAction === "guestbook" ? <ButtonSpinner /> : <MessageSquareText size={16} />}
             {routeAction === "guestbook" ? "打开中..." : "留言板"}
@@ -890,6 +1020,10 @@ export function App() {
           )}
 
           {view === "editor" && !authenticated && <EmptyState title="需要登录" description="登录后才能新增或编辑文章。" />}
+
+          {view === "statistics" && authenticated && <StatisticsPage />}
+
+          {view === "statistics" && !authenticated && <EmptyState title="需要登录" description="登录后才能查看访问统计。" />}
 
           {view === "guestbook" && (
             <Guestbook
@@ -1309,8 +1443,11 @@ function ArticleList(props: {
                 </p>
               )}
               <TagList tags={article.tags} />
-              <span className="article-date" title={formatArticleTimeTitle(article.createdAt, article.updatedAt)}>
-                {formatDate(article.updatedAt)}
+              <span className="article-row-meta">
+                <span className="article-date" title={formatArticleTimeTitle(article.createdAt, article.updatedAt)}>
+                  {formatDate(article.updatedAt)}
+                </span>
+                <ArticleViewCount count={article.viewCount} />
               </span>
             </button>
             <div className="row-actions">
@@ -1440,6 +1577,8 @@ function ArticleView(props: {
           <span title={formatArticleTimeTitle(props.article.createdAt, props.article.updatedAt)}>
             {formatDate(props.article.updatedAt)}
           </span>
+          <span className="dot" aria-hidden="true" />
+          <ArticleViewCount count={props.article.viewCount} />
         </div>
       </header>
       <div className="markdown-body article-markdown">
