@@ -4,13 +4,16 @@ import type {
   ArticleInput,
   ArticleListResponse,
   ArticleSearchResponse,
+  ArticleViewStatisticsResponse,
   GuestbookCaptcha,
   GuestbookInput,
   GuestbookMessage,
   ImageHostProvider,
   ImageUploadResponse,
+  StatisticsFilters,
   Tag
 } from "./types";
+import { buildStatisticsSearch } from "./statistics";
 
 export class ApiRequestError extends Error {
   /** Creates an API error whose code lets the UI choose the correct recovery flow. */
@@ -92,6 +95,12 @@ export async function getArticle(slug: string, password = "") {
   if (password) searchParams.set("password", password);
   const query = searchParams.toString();
   return requestJson<{ article: Article }>(`/api/articles/${encodeURIComponent(slug)}${query ? `?${query}` : ""}`);
+}
+
+/** Fetches a page of administrator-only article view records. */
+export async function listArticleViewStatistics(filters: StatisticsFilters, page = 1) {
+  const query = buildStatisticsSearch(filters, page);
+  return requestJson<ArticleViewStatisticsResponse>(`/api/statistics?${query}`);
 }
 
 export async function createArticle(input: ArticleInput) {

@@ -20,6 +20,7 @@ export interface ArticleSummary {
   coverImageUrl: string;
   searchSnippet?: string;
   visibility: Visibility;
+  viewCount: number;
   createdAt: string;
   updatedAt: string;
   tags: Tag[];
@@ -42,6 +43,35 @@ export interface ArticleSearchResponse {
   articleResult: ArticleListResponse;
   allArticleTotal: number;
   tags: Tag[];
+}
+
+export interface ArticleViewRecord {
+  id: number;
+  articleSlug: string;
+  articleTitle: string;
+  ipAddress: string;
+  userAgent: string;
+  deviceType: "desktop" | "mobile" | "tablet" | "unknown";
+  osName: string;
+  browserName: string;
+  viewedAt: string;
+}
+
+export interface StatisticsFilters {
+  article: string;
+  ip: string;
+  device: string;
+  from: string;
+  to: string;
+}
+
+export interface ArticleViewStatisticsResponse {
+  records: ArticleViewRecord[];
+  articles: Array<{ slug: string; title: string }>;
+  page: number;
+  limit: number;
+  total: number;
+  hasMore: boolean;
 }
 
 export interface ArticleInput {
