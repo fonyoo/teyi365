@@ -1353,13 +1353,15 @@ function safeEqual(a: string, b: string) {
   return result === 0;
 }
 
-function json(data: unknown, init: ResponseInit = {}) {
+/** Creates a non-cacheable JSON API response while preserving caller status and headers. */
+export function json(data: unknown, init: ResponseInit = {}) {
+  const headers = new Headers(init.headers); // Normalize all supported HeadersInit forms before applying API defaults.
+  headers.set("Content-Type", "application/json; charset=utf-8");
+  headers.set("Cache-Control", "no-store");
+
   return new Response(JSON.stringify(data), {
     ...init,
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      ...init.headers
-    }
+    headers
   });
 }
 

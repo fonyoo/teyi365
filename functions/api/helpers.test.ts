@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildSearchSnippet,
   formatArticleResponse,
+  json,
   remainingCooldownSeconds,
   normalizedTags,
   slugify,
@@ -14,6 +15,13 @@ import {
 } from "./[[path]]";
 
 describe("api helpers", () => {
+  it("marks JSON API responses as non-cacheable", () => {
+    const response = json({ ok: true });
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("Content-Type")).toBe("application/json; charset=utf-8");
+  });
+
   it("formats public article view counts without exposing visitor details", () => {
     const article = formatArticleResponse(
       {
