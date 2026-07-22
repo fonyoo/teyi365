@@ -11,7 +11,7 @@
 1. 进入项目目录：
 
    ```bash
-   cd D:\webCode\cloudflare-blog\html-md-reader-main
+   cd cloudflare-blog
    ```
 
 2. 安装依赖：
@@ -38,9 +38,10 @@
    ADMIN_USERNAME=admin
    ADMIN_PASSWORD=change-me
    SESSION_SECRET=change-me-to-a-long-random-string
+   IMGBB_API_KEY=你的 ImgBB API Key
    ```
 
-   这几个默认值只适合本地临时调试。线上一定要在 Cloudflare Pages 里配置真实值，不要让线上继续使用 `change-me`。
+   前三个值必须配置；`IMGBB_API_KEY` 只在本地测试图片上传时需要。这些默认值只适合本地临时调试。线上一定要在 Cloudflare Pages 里配置真实值，不要让线上继续使用 `change-me`。
 
 5. 初始化本地 D1 数据库表结构：
 
@@ -208,9 +209,12 @@ Settings -> Variables and Secrets
 ADMIN_USERNAME = admin
 ADMIN_PASSWORD = 你的线上管理员密码
 SESSION_SECRET = 一串足够长的随机字符串
+IMGBB_API_KEY = 你的 ImgBB API Key
 ```
 
-建议把 `ADMIN_PASSWORD` 和 `SESSION_SECRET` 设置为 Secret。Secret 对代码来说和普通环境变量一样使用，但在 Cloudflare 后台不会明文展示。
+建议把 `ADMIN_PASSWORD`、`SESSION_SECRET` 和 `IMGBB_API_KEY` 设置为 Secret。Secret 对代码来说和普通环境变量一样使用，但在 Cloudflare 后台不会明文展示。
+
+图片上传默认使用 [ImgBB API](https://api.imgbb.com/)；登录 ImgBB 后可以免费生成 API Key。不要把 Key 写入代码、提交到 Git 仓库或放进前端环境变量。
 
 可以用下面的命令生成 `SESSION_SECRET`：
 
@@ -219,6 +223,19 @@ node -e "console.log(crypto.randomUUID() + crypto.randomUUID())"
 ```
 
 修改 `SESSION_SECRET` 后，已经登录的浏览器会失效，需要重新登录，这是正常现象。
+
+### 图片上传与图床回退
+
+管理员在文章 Markdown 编辑框或“列表图片”输入框里粘贴图片时，浏览器会先处理图片，再调用 Pages Function 上传：
+
+- PNG、JPEG 等静态图片会转换为 WebP，最长边限制为 2560px，质量为 0.86。
+- GIF 保留原格式，避免动画丢失。
+- 转换后的图片最大为 10 MB。
+- 图床顺序为 ImgBB、Pixhost、Catbox、Pixeldrain。
+- 某个图床失败后，浏览器会在 `localStorage` 记录失败时间，30 分钟内跳过该图床。
+- Pages Function 只负责转发上传，D1 和项目仓库只保存图床返回的 URL，不保存图片文件。
+
+ImgBB 需要配置 `IMGBB_API_KEY`。Pixhost 使用其[公开上传 API](https://pixhost.to/api/index.html#upload-image)，无需账号；Catbox 和 Pixeldrain 是匿名备用，但可能拒绝部分 Cloudflare 出口请求。
 
 ### 6. 绑定 D1 数据库
 
@@ -272,9 +289,10 @@ pnpm db:migrate:remote
 - 首页直接展示文章，移动端自适应。
 - 支持搜索标题、摘要和 Markdown 正文。
 - 支持标签列表与标签筛选。
-- 私密文章只有登录后可见。
-- 登录后可新增、编辑、删除文章，支持多标签和公开/登录可见配置。
-- Markdown 使用 GitHub 风格渲染，支持 GFM 表格、任务列表和代码块高亮。
+- 登录可见文章只有管理员登录后可见；密码可见文章不会出现在访客列表中。
+- 密码文章支持 4 位字母数字密码、带密码分享链接和连续输错 5 次后封禁 IP 一小时。
+- 登录后可新增、编辑、删除文章，支持多标签以及公开、登录可见、密码可见配置。
+- Markdown 使用 GitHub 风格渲染，支持 GFM 表格、任务列表、代码块高亮和粘贴图片自动上传。
 
 ## 常用命令说明
 
@@ -392,6 +410,9 @@ migrations/
 0001_initial.sql
 0002_article_cover_image.sql
 0003_guestbook_messages.sql
+0004_guestbook_reply_target.sql
+0005_guestbook_moderation.sql
+0006_password_articles.sql
 ```
 
 执行过哪些迁移，D1 会记录在数据库里的 `d1_migrations` 表中。所以下次再执行时，只会应用还没应用过的新迁移。

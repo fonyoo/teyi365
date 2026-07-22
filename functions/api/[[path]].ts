@@ -7,7 +7,7 @@ interface Env {
 }
 
 type Visibility = "public" | "private" | "password";
-type ImageHostProvider = "imgbb" | "catbox" | "pixeldrain";
+type ImageHostProvider = "imgbb" | "pixhost" | "catbox" | "pixeldrain";
 
 interface ArticleRow {
   id: number;
@@ -163,7 +163,7 @@ async function handleUploads(context: EventContext<Env, string, unknown>, segmen
   if (segments.length === 0 && request.method === "POST") {
     await requireAuth(request, env);
     const provider = new URL(request.url).searchParams.get("provider") as ImageHostProvider | null;
-    if (!provider || !["imgbb", "catbox", "pixeldrain"].includes(provider)) {
+    if (!provider || !["imgbb", "pixhost", "catbox", "pixeldrain"].includes(provider)) {
       throw new ApiError("BAD_REQUEST", "不支持的图床", 400);
     }
 
@@ -214,6 +214,23 @@ async function uploadImageToProvider(
     return url;
   }
 
+  if (provider === "pixhost") {
+    const formData = new FormData();
+    formData.set("img", file, `image.${extension}`);
+    formData.set("content_type", "0");
+    formData.set("max_th_size", "500");
+    const response = await fetchWithTimeout("https://api.pixhost.to/images", {
+      method: "POST",
+      headers: { Accept: "application/json" },
+      body: formData
+    });
+    const result = (await response.json().catch(() => ({}))) as { th_url?: string };
+    if (!response.ok || !result.th_url) {
+      throw new ApiError("UPLOAD_FAILED", "Pixhost 上传失败", 502);
+    }
+    return pixhostFullImageUrl(result.th_url);
+  }
+
   if (provider === "catbox") {
     const formData = new FormData();
     formData.set("reqtype", "fileupload");
@@ -234,6 +251,23 @@ async function uploadImageToProvider(
     throw new ApiError("UPLOAD_FAILED", "Pixeldrain 上传失败", 502);
   }
   return `https://pixeldrain.com/api/file/${result.id}`;
+}
+
+/** Converts a Pixhost thumbnail URL into its corresponding full-resolution image URL. */
+export function pixhostFullImageUrl(thumbnailUrl: string) {
+  try {
+    const url = new URL(thumbnailUrl);
+    const hostMatch = url.hostname.match(/^t(\d+)\.pixhost\.to$/);
+    if (!hostMatch || !url.pathname.startsWith("/thumbs/")) {
+      throw new Error("Unexpected Pixhost URL");
+    }
+    url.protocol = "https:";
+    url.hostname = `img${hostMatch[1]}.pixhost.to`;
+    url.pathname = url.pathname.replace(/^\/thumbs\//, "/images/");
+    return url.toString();
+  } catch {
+    throw new ApiError("UPLOAD_FAILED", "Pixhost 返回了无法识别的图片地址", 502);
+  }
 }
 
 /** Applies a bounded timeout to third-party image-host requests. */

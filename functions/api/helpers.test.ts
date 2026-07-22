@@ -8,6 +8,7 @@ import {
   validateArticleInput,
   validateMessageInput,
   normalizeReplyTarget,
+  pixhostFullImageUrl,
   verifyGuestbookCaptcha
 } from "./[[path]]";
 
@@ -56,6 +57,13 @@ describe("api helpers", () => {
     expect(() =>
       validateArticleInput({ title: "Protected", content: "Body", visibility: "password", accessPassword: "bad", tags: [] })
     ).toThrow();
+  });
+
+  it("converts Pixhost thumbnail URLs to full-resolution image URLs", () => {
+    expect(pixhostFullImageUrl("https://t42.pixhost.to/thumbs/123/456_image.webp")).toBe(
+      "https://img42.pixhost.to/images/123/456_image.webp"
+    );
+    expect(() => pixhostFullImageUrl("https://example.com/image.webp")).toThrow();
   });
 
   it("shows a body search snippet when the title and excerpt do not contain the query", () => {
