@@ -2,11 +2,12 @@ interface Env {
   DB: D1Database;
   ADMIN_USERNAME: string;
   ADMIN_PASSWORD: string;
+  IMGBB_API_KEY?: string;
   SESSION_SECRET: string;
 }
 
 type Visibility = "public" | "private" | "password";
-type ImageHostProvider = "catbox" | "pixeldrain";
+type ImageHostProvider = "imgbb" | "catbox" | "pixeldrain";
 
 interface ArticleRow {
   id: number;
@@ -162,7 +163,7 @@ async function handleUploads(context: EventContext<Env, string, unknown>, segmen
   if (segments.length === 0 && request.method === "POST") {
     await requireAuth(request, env);
     const provider = new URL(request.url).searchParams.get("provider") as ImageHostProvider | null;
-    if (!provider || !["catbox", "pixeldrain"].includes(provider)) {
+    if (!provider || !["imgbb", "catbox", "pixeldrain"].includes(provider)) {
       throw new ApiError("BAD_REQUEST", "不支持的图床", 400);
     }
 
@@ -181,7 +182,7 @@ async function handleUploads(context: EventContext<Env, string, unknown>, segmen
       throw new ApiError("BAD_REQUEST", "图片大小需要在 10 MB 以内", 400);
     }
 
-    const url = await uploadImageToProvider(provider, file, extension);
+    const url = await uploadImageToProvider(provider, file, extension, env);
     return json({ url, provider });
   }
 
@@ -192,8 +193,27 @@ async function handleUploads(context: EventContext<Env, string, unknown>, segmen
 async function uploadImageToProvider(
   provider: ImageHostProvider,
   file: File,
-  extension: string
+  extension: string,
+  env: Env
 ) {
+  if (provider === "imgbb") {
+    const apiKey = String(env.IMGBB_API_KEY ?? "").trim();
+    if (!apiKey) {
+      throw new ApiError("UPLOAD_FAILED", "ImgBB API Key 尚未配置", 502);
+    }
+
+    const formData = new FormData();
+    formData.set("key", apiKey);
+    formData.set("image", file, `image.${extension}`);
+    const response = await fetchWithTimeout("https://api.imgbb.com/1/upload", { method: "POST", body: formData });
+    const result = (await response.json().catch(() => ({}))) as { success?: boolean; data?: { url?: string } };
+    const url = String(result.data?.url ?? "");
+    if (!response.ok || !result.success || !/^https:\/\/i\.ibb\.co\/[A-Za-z0-9/_-]+\.[A-Za-z0-9]+$/.test(url)) {
+      throw new ApiError("UPLOAD_FAILED", "ImgBB 上传失败，请检查 API Key", 502);
+    }
+    return url;
+  }
+
   if (provider === "catbox") {
     const formData = new FormData();
     formData.set("reqtype", "fileupload");

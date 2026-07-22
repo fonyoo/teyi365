@@ -3,11 +3,15 @@ import { markdownImage, orderedImageHostProviders } from "./imageUpload";
 
 describe("image upload helpers", () => {
   it("skips providers whose local failure cooldown is active", () => {
-    expect(orderedImageHostProviders({ catbox: 9_000 }, 10_000)).toEqual(["pixeldrain"]);
+    expect(orderedImageHostProviders({ imgbb: 9_000, catbox: 9_000 }, 10_000)).toEqual(["pixeldrain"]);
   });
 
   it("retries every provider when all providers are cooling down", () => {
-    expect(orderedImageHostProviders({ catbox: 9_000, pixeldrain: 9_000 }, 10_000)).toEqual(["catbox", "pixeldrain"]);
+    expect(orderedImageHostProviders({ imgbb: 9_000, catbox: 9_000, pixeldrain: 9_000 }, 10_000)).toEqual([
+      "imgbb",
+      "catbox",
+      "pixeldrain"
+    ]);
   });
 
   it("creates Markdown image syntax", () => {
