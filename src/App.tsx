@@ -4,6 +4,7 @@ import rehypeHighlight from "rehype-highlight";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
+import { remarkHighlightMark } from "remark-highlight-mark";
 import {
   ArrowLeft,
   BarChart3,
@@ -75,7 +76,9 @@ const passwordQueryKey = "password"; // URL query key used by password article s
 
 const markdownSanitizeSchema: RehypeSanitizeOptions = {
   ...defaultSchema,
-  tagNames: Array.from(new Set([...(defaultSchema.tagNames ?? []), "kbd", "mark"]))
+  tagNames: Array.from(
+    new Set([...(defaultSchema.tagNames ?? []), "abbr", "figcaption", "figure", "kbd", "mark", "small", "u"])
+  )
 };
 const guestbookCooldownSeconds = 120; // Seconds a guest must wait before sending again.
 const defaultGuestbookDraft: GuestbookInput = {
@@ -1661,7 +1664,7 @@ function ArticleView(props: {
 export function MarkdownRenderer(props: { content: string }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkDoubleEqualsMark]}
+      remarkPlugins={[remarkGfm, remarkHighlightMark, remarkHighlightMarkElement]}
       rehypePlugins={[rehypeRaw, [rehypeSanitize, markdownSanitizeSchema], [rehypeHighlight, { detect: true }]]}
       components={{
         pre: ({ children }) => <CodeBlock>{children}</CodeBlock>
@@ -1672,85 +1675,24 @@ export function MarkdownRenderer(props: { content: string }) {
   );
 }
 
-interface MarkdownParentNode {
-  children?: MarkdownNode[];
+interface MarkdownAstNode {
+  type?: string;
+  data?: Record<string, unknown>;
+  children?: MarkdownAstNode[];
 }
 
-interface MarkdownTextNode {
-  type: "text";
-  value: string;
-}
-
-interface MarkdownHtmlNode {
-  type: "html";
-  value: string;
-}
-
-type MarkdownNode = MarkdownParentNode | MarkdownTextNode | MarkdownHtmlNode;
-
-function remarkDoubleEqualsMark() {
-  return (tree: MarkdownParentNode) => {
-    visitMarkdownText(tree, (node, index, parent) => {
-      const replacement = splitDoubleEqualsMark(node.value);
-      if (replacement.length <= 1) {
-        return;
+/** Maps the plugin's highlight node to a safe mark element for rehype. */
+function remarkHighlightMarkElement() {
+  return (tree: MarkdownAstNode) => {
+    const visit = (node: MarkdownAstNode) => {
+      if (node.type === "highlight") {
+        node.data = { ...node.data, hName: "mark" };
       }
+      node.children?.forEach(visit);
+    };
 
-      parent.children?.splice(index, 1, ...replacement);
-    });
+    visit(tree);
   };
-}
-
-function visitMarkdownText(
-  node: MarkdownNode,
-  visitor: (node: MarkdownTextNode, index: number, parent: MarkdownParentNode) => void
-) {
-  if (!("children" in node) || !node.children) {
-    return;
-  }
-
-  for (let index = node.children.length - 1; index >= 0; index -= 1) {
-    const child = node.children[index];
-    if (isMarkdownTextNode(child)) {
-      visitor(child, index, node);
-    } else {
-      visitMarkdownText(child, visitor);
-    }
-  }
-}
-
-function splitDoubleEqualsMark(value: string): Array<MarkdownTextNode | MarkdownHtmlNode> {
-  const nodes: Array<MarkdownTextNode | MarkdownHtmlNode> = [];
-  const pattern = /==([^=\n](?:.*?[^=\n])?)==/g;
-  let cursor = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = pattern.exec(value))) {
-    if (match.index > cursor) {
-      nodes.push({ type: "text", value: value.slice(cursor, match.index) });
-    }
-
-    nodes.push({ type: "html", value: `<mark>${escapeHtml(match[1])}</mark>` });
-    cursor = match.index + match[0].length;
-  }
-
-  if (cursor < value.length) {
-    nodes.push({ type: "text", value: value.slice(cursor) });
-  }
-
-  return nodes.length ? nodes : [{ type: "text", value }];
-}
-
-function isMarkdownTextNode(node: MarkdownNode): node is MarkdownTextNode {
-  return "type" in node && node.type === "text" && "value" in node;
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }
 
 function CodeBlock(props: { children: React.ReactNode }) {

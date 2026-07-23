@@ -27,6 +27,7 @@
     "rehype-raw": "^7.0.0",
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
+    "remark-highlight-mark": "^1.4.0",
     "ua-parser-js": "^1.0.41"
   },
   "devDependencies": {
