@@ -37,6 +37,7 @@ vi.mock("./api", () => api);
 vi.mock("./StatisticsPage", () => ({ StatisticsPage: () => <div data-testid="statistics-page">统计页面</div> }));
 
 const articleSummary: ArticleSummary = {
+  id: 1,
   slug: "test-article",
   title: "测试文章",
   excerpt: "测试摘要",
@@ -200,6 +201,18 @@ describe("App article routing", () => {
 
     expect(screen.getByText("1 次浏览")).toBeTruthy();
     expect(api.searchArticles).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads the article comment area with the opened article id", async () => {
+    api.getArticle.mockResolvedValueOnce({ article: openedArticle });
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "测试文章" })).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: /测试文章/ }));
+
+    await waitFor(() => expect(api.listMessages).toHaveBeenCalledWith(1, ""));
+    expect(screen.getByRole("heading", { name: "文章评论" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "发送评论" })).toBeTruthy();
   });
 });
 

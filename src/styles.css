@@ -1221,6 +1221,12 @@ label {
   font-weight: 800;
 }
 
+.article-comments {
+  margin-top: 48px;
+  border-top: 1px solid #e0ddd3;
+  padding-top: 32px;
+}
+
 .image-upload-hint {
   color: #7a8179;
   font-size: 12px;

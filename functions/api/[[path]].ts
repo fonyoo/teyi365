@@ -54,6 +54,7 @@ interface SearchSnippetRow {
 
 interface MessageRow {
   id: number;
+  article_id: number | null;
   parent_id: number | null;
   nickname: string;
   email: string;
@@ -69,6 +70,8 @@ interface MessageInput {
   email: string;
   content: string;
   parentId: number | null;
+  articleId: number | null;
+  articlePassword: string;
   captchaToken: string;
   captchaAnswer: string;
 }
@@ -465,7 +468,14 @@ async function handleMessages(context: EventContext<Env, string, unknown>, segme
   }
 
   if (segments.length === 0 && request.method === "GET") {
-    return json({ messages: await listMessages(env.DB, authenticated) });
+    const url = new URL(request.url);
+    const articleId = parseOptionalPositiveInteger(url.searchParams.get("articleId"));
+    if (articleId !== null) {
+      const article = await getArticleById(env.DB, articleId);
+      if (!article) return jsonError("NOT_FOUND", "文章不存在", 404);
+      await ensureArticleAccessible(request, env, article, url.searchParams.get("password") ?? "", authenticated);
+    }
+    return json({ messages: await listMessages(env.DB, authenticated, articleId) });
   }
 
   if (segments.length === 0 && request.method === "POST") {
@@ -474,7 +484,17 @@ async function handleMessages(context: EventContext<Env, string, unknown>, segme
       return jsonError("BAD_REQUEST", "验证码不正确或已过期", 400);
     }
 
-    const replyTarget = input.parentId ? normalizeReplyTarget(await getMessageById(env.DB, input.parentId)) : null;
+    const article = input.articleId === null ? null : await getArticleById(env.DB, input.articleId);
+    if (input.articleId !== null) {
+      if (!article) return jsonError("NOT_FOUND", "文章不存在", 404);
+      await ensureArticleAccessible(request, env, article, input.articlePassword, authenticated);
+    }
+
+    const replyTargetRow = input.parentId ? await getMessageById(env.DB, input.parentId) : null;
+    if (replyTargetRow && replyTargetRow.article_id !== input.articleId) {
+      return jsonError("BAD_REQUEST", "回复目标不属于当前留言区", 400);
+    }
+    const replyTarget = input.parentId ? normalizeReplyTarget(replyTargetRow) : null;
     const messageInput = replyTarget ? { ...input, parentId: replyTarget.parentId } : input;
     const replyToNickname = replyTarget?.replyToNickname ?? ""; // Nickname shown for flat child-to-child replies.
 
@@ -524,17 +544,20 @@ async function handleMessages(context: EventContext<Env, string, unknown>, segme
 }
 
 /** Returns guestbook messages as a two-level tree. */
-async function listMessages(db: D1Database, includeEmail: boolean) {
-  const where = includeEmail ? "" : "WHERE status = 'approved'";
+async function listMessages(db: D1Database, includeEmail: boolean, articleId: number | null = null) {
+  const clauses = [includeEmail ? "1 = 1" : "status = 'approved'"];
+  clauses.push(articleId === null ? "article_id IS NULL" : "article_id = ?");
+  const bindings = articleId === null ? [] : [articleId];
   const result = await db
     .prepare(
       `
-        SELECT id, parent_id, nickname, email, content, author_hash, reply_to_nickname, status, created_at
+        SELECT id, article_id, parent_id, nickname, email, content, author_hash, reply_to_nickname, status, created_at
         FROM guestbook_messages
-        ${where}
+        WHERE ${clauses.join(" AND ")}
         ORDER BY datetime(created_at) ASC, id ASC
       `
     )
+    .bind(...bindings)
     .all<MessageRow>();
   const roots = new Map<number, ReturnType<typeof formatMessage> & { replies: ReturnType<typeof formatMessage>[] }>();
 
@@ -559,12 +582,12 @@ async function createMessage(db: D1Database, input: MessageInput, authorHash: st
   const result = await db
     .prepare(
       `
-        INSERT INTO guestbook_messages (parent_id, nickname, email, content, author_hash, reply_to_nickname, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        RETURNING id, parent_id, nickname, email, content, author_hash, reply_to_nickname, status, created_at
+        INSERT INTO guestbook_messages (article_id, parent_id, nickname, email, content, author_hash, reply_to_nickname, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        RETURNING id, article_id, parent_id, nickname, email, content, author_hash, reply_to_nickname, status, created_at
       `
     )
-    .bind(input.parentId, input.nickname, input.email, input.content, authorHash, replyToNickname, status)
+    .bind(input.articleId, input.parentId, input.nickname, input.email, input.content, authorHash, replyToNickname, status)
     .first<MessageRow>();
 
   if (!result) {
@@ -582,7 +605,7 @@ async function approveMessage(db: D1Database, messageId: number) {
         UPDATE guestbook_messages
         SET status = 'approved'
         WHERE id = ?
-        RETURNING id, parent_id, nickname, email, content, author_hash, reply_to_nickname, status, created_at
+        RETURNING id, article_id, parent_id, nickname, email, content, author_hash, reply_to_nickname, status, created_at
       `
     )
     .bind(messageId)
@@ -592,7 +615,7 @@ async function approveMessage(db: D1Database, messageId: number) {
 /** Finds a message row used as the direct reply target. */
 async function getMessageById(db: D1Database, messageId: number) {
   return db
-    .prepare("SELECT id, parent_id, nickname, email, content, author_hash, reply_to_nickname, status, created_at FROM guestbook_messages WHERE id = ?")
+    .prepare("SELECT id, article_id, parent_id, nickname, email, content, author_hash, reply_to_nickname, status, created_at FROM guestbook_messages WHERE id = ?")
     .bind(messageId)
     .first<MessageRow>();
 }
@@ -620,6 +643,7 @@ export function normalizeReplyTarget(target: Pick<MessageRow, "id" | "parent_id"
 function formatMessage(row: MessageRow, includeEmail: boolean) {
   return {
     id: row.id,
+    articleId: row.article_id,
     parentId: row.parent_id,
     nickname: row.nickname,
     email: includeEmail ? row.email : undefined,
@@ -838,6 +862,7 @@ export function formatArticleResponse(
   includePassword = false
 ) {
   return {
+    id: row.id,
     slug: row.slug,
     title: row.title,
     excerpt: row.excerpt,
@@ -991,6 +1016,35 @@ export function validateArticleInput(raw: Partial<ArticleInput>): ArticleInput {
   };
 }
 
+async function getArticleById(db: D1Database, articleId: number) {
+  return db
+    .prepare(
+      `
+        SELECT id, slug, title, excerpt, cover_image_url, content_md, visibility, access_password, view_count, created_at, updated_at
+        FROM articles
+        WHERE id = ?
+      `
+    )
+    .bind(articleId)
+    .first<ArticleRow>();
+}
+
+async function ensureArticleAccessible(
+  request: Request,
+  env: Env,
+  article: ArticleRow,
+  suppliedPassword: string,
+  authenticated: boolean
+) {
+  if (authenticated) return;
+  if (article.visibility === "private" && !article.access_password) {
+    throw new ApiError("NOT_FOUND", "文章不存在或需要登录后查看", 404);
+  }
+  if (article.access_password) {
+    await verifyArticlePassword(request, env.DB, env.SESSION_SECRET, article.access_password, suppliedPassword);
+  }
+}
+
 /** Maps the UI-only password visibility to the existing private database state. */
 function storedVisibility(visibility: Visibility): "public" | "private" {
   return visibility === "public" ? "public" : "private";
@@ -1063,6 +1117,8 @@ export function validateMessageInput(raw: Partial<MessageInput>, authenticated: 
   const email = authenticated ? String(raw.email ?? "").trim() : String(raw.email ?? "").trim();
   const content = String(raw.content ?? "").trim();
   const parentId = raw.parentId ? Number(raw.parentId) : null;
+  const articleId = raw.articleId ? Number(raw.articleId) : null;
+  const articlePassword = String(raw.articlePassword ?? "");
   const captchaToken = String(raw.captchaToken ?? "");
   const captchaAnswer = String(raw.captchaAnswer ?? "").trim();
 
@@ -1086,6 +1142,10 @@ export function validateMessageInput(raw: Partial<MessageInput>, authenticated: 
     throw new ApiError("BAD_REQUEST", "回复目标不正确", 400);
   }
 
+  if (articleId !== null && (!Number.isInteger(articleId) || articleId <= 0)) {
+    throw new ApiError("BAD_REQUEST", "文章 ID 不正确", 400);
+  }
+
   if (!authenticated && (!captchaToken || !captchaAnswer)) {
     throw new ApiError("BAD_REQUEST", "验证码不能为空", 400);
   }
@@ -1095,6 +1155,8 @@ export function validateMessageInput(raw: Partial<MessageInput>, authenticated: 
     email,
     content,
     parentId,
+    articleId,
+    articlePassword,
     captchaToken,
     captchaAnswer
   };
@@ -1363,6 +1425,15 @@ export function json(data: unknown, init: ResponseInit = {}) {
     ...init,
     headers
   });
+}
+
+function parseOptionalPositiveInteger(value: string | null) {
+  if (value === null || value === "") return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new ApiError("BAD_REQUEST", "文章 ID 不正确", 400);
+  }
+  return parsed;
 }
 
 function jsonError(code: ApiErrorCode, message: string, status: number) {

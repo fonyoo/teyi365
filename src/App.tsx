@@ -149,6 +149,8 @@ export function App() {
   const guestbookSubmittingRef = useRef(false);
   const guestbookActionRef = useRef("");
   const guestbookCaptchaRefreshingRef = useRef(false);
+  const messageScopeRef = useRef<string>("guestbook");
+  const messageRequestIdRef = useRef(0);
   const routeActionRef = useRef("");
   const routeActionOwnerRef = useRef(0);
   const authActionRef = useRef("");
@@ -222,8 +224,10 @@ export function App() {
   useEffect(() => {
     if (view === "guestbook") {
       void refreshGuestbook();
+    } else if (view === "article" && activeArticle) {
+      void refreshGuestbook(activeArticle.id, currentArticlePassword(activeArticle.id));
     }
-  }, [authenticated, view]);
+  }, [authenticated, view, activeArticle?.id]);
 
   async function bootstrap() {
     setLoading(true);
@@ -717,13 +721,24 @@ export function App() {
   }
 
   /** Reloads guestbook messages and prepares captcha state for the current viewer. */
-  async function refreshGuestbook() {
+  async function refreshGuestbook(articleId: number | null = null, password = "") {
+    const scope = articleId === null ? "guestbook" : `article-${articleId}`;
+    const requestId = messageRequestIdRef.current + 1;
+    messageRequestIdRef.current = requestId;
+    if (messageScopeRef.current !== scope) {
+      messageScopeRef.current = scope;
+      setGuestbookMessages([]);
+      setGuestbookReplyTarget(null);
+      setGuestbookDraft((currentDraft) => ({ ...currentDraft, parentId: null }));
+    }
     setGuestbookLoading(true);
     try {
-      const result = await listMessages();
+      const result = await listMessages(articleId, password);
+      if (requestId !== messageRequestIdRef.current) return;
       setGuestbookMessages(result.messages);
       if (!authenticated) {
         const captchaResult = await getMessageCaptcha();
+        if (requestId !== messageRequestIdRef.current) return;
         setGuestbookCaptcha(captchaResult.captcha);
         setGuestbookDraft((currentDraft) => ({ ...currentDraft, captchaToken: captchaResult.captcha.token, captchaAnswer: "" }));
       } else {
@@ -731,9 +746,10 @@ export function App() {
         setGuestbookDraft((currentDraft) => ({ ...currentDraft, nickname: "仰晨", email: "", captchaToken: "", captchaAnswer: "" }));
       }
     } catch (caught) {
+      if (requestId !== messageRequestIdRef.current) return;
       setError(asErrorMessage(caught));
     } finally {
-      setGuestbookLoading(false);
+      if (requestId === messageRequestIdRef.current) setGuestbookLoading(false);
     }
   }
 
@@ -758,7 +774,7 @@ export function App() {
   }
 
   /** Sends a guestbook message or top-level reply from the shared form. */
-  async function submitGuestbookMessage(event: React.FormEvent<HTMLFormElement>) {
+  async function submitGuestbookMessage(event: React.FormEvent<HTMLFormElement>, articleId: number | null = null) {
     event.preventDefault();
     if (guestbookSubmittingRef.current) {
       return;
@@ -779,6 +795,8 @@ export function App() {
         ...guestbookDraft,
         nickname: authenticated ? "仰晨" : guestbookDraft.nickname,
         parentId: guestbookReplyTarget?.id ?? null,
+        articleId,
+        articlePassword: articleId === null ? "" : currentArticlePassword(articleId),
         captchaToken: guestbookCaptcha?.token ?? guestbookDraft.captchaToken
       };
       await createMessage(input);
@@ -792,8 +810,16 @@ export function App() {
         email: authenticated ? "" : guestbookDraft.email
       });
       setGuestbookReplyTarget(null);
-      setMessage(authenticated ? (guestbookReplyTarget ? "回复已发送" : "留言已发送") : "留言已提交，审核通过后会公开显示");
-      await refreshGuestbook();
+      setMessage(
+        authenticated
+          ? guestbookReplyTarget
+            ? "回复已发送"
+            : articleId === null
+              ? "留言已发送"
+              : "评论已发送"
+          : `${articleId === null ? "留言" : "评论"}已提交，审核通过后会公开显示`
+      );
+      await refreshGuestbook(articleId, input.articlePassword);
     } catch (caught) {
       setError(asErrorMessage(caught));
       await refreshGuestbookCaptcha();
@@ -804,12 +830,12 @@ export function App() {
   }
 
   /** Deletes a guestbook message after administrator confirmation. */
-  async function removeGuestbookMessage(id: number) {
+  async function removeGuestbookMessage(id: number, articleId: number | null = null) {
     if (guestbookActionRef.current) {
       return;
     }
 
-    if (!window.confirm("确定删除这条留言吗？")) {
+    if (!window.confirm(`确定删除这条${articleId === null ? "留言" : "评论"}吗？`)) {
       return;
     }
 
@@ -819,8 +845,8 @@ export function App() {
     setError("");
     try {
       await deleteMessage(id);
-      setMessage("留言已删除");
-      await refreshGuestbook();
+      setMessage(`${articleId === null ? "留言" : "评论"}已删除`);
+      await refreshGuestbook(articleId, articleId === null ? "" : currentArticlePassword(articleId));
     } catch (caught) {
       setError(asErrorMessage(caught));
     } finally {
@@ -830,7 +856,7 @@ export function App() {
   }
 
   /** Approves a pending guestbook message for public display. */
-  async function approveGuestbookMessage(id: number) {
+  async function approveGuestbookMessage(id: number, articleId: number | null = null) {
     if (guestbookActionRef.current) {
       return;
     }
@@ -841,14 +867,19 @@ export function App() {
     setError("");
     try {
       await approveMessage(id);
-      setMessage("留言已通过审核");
-      await refreshGuestbook();
+      setMessage(`${articleId === null ? "留言" : "评论"}已通过审核`);
+      await refreshGuestbook(articleId, articleId === null ? "" : currentArticlePassword(articleId));
     } catch (caught) {
       setError(asErrorMessage(caught));
     } finally {
       guestbookActionRef.current = "";
       setGuestbookAction("");
     }
+  }
+
+  function currentArticlePassword(articleId: number) {
+    if (activeArticle?.id !== articleId) return "";
+    return new URLSearchParams(window.location.search).get(passwordQueryKey) ?? "";
   }
 
   return (
@@ -1002,6 +1033,35 @@ export function App() {
               onEdit={() => editArticle(activeArticle.slug)}
               onDelete={() => removeArticle(activeArticle.slug)}
               onShare={() => void shareArticle()}
+              comments={
+                <Guestbook
+                  mode="article"
+                  authenticated={authenticated}
+                  captcha={guestbookCaptcha}
+                  cooldown={guestbookCooldown}
+                  draft={guestbookDraft}
+                  loading={guestbookLoading}
+                  messages={guestbookMessages}
+                  replyTarget={guestbookReplyTarget}
+                  submitting={guestbookSubmitting}
+                  captchaRefreshing={guestbookCaptchaRefreshing}
+                  action={guestbookAction}
+                  onCancelReply={() => {
+                    setGuestbookReplyTarget(null);
+                    setGuestbookDraft((currentDraft) => ({ ...currentDraft, parentId: null }));
+                  }}
+                  onApprove={(id) => void approveGuestbookMessage(id, activeArticle.id)}
+                  onDelete={(id) => void removeGuestbookMessage(id, activeArticle.id)}
+                  onDraftChange={setGuestbookDraft}
+                  onRefreshCaptcha={() => void refreshGuestbookCaptcha()}
+                  onReply={(replyTarget) => {
+                    setGuestbookReplyTarget(replyTarget);
+                    setGuestbookDraft((currentDraft) => ({ ...currentDraft, parentId: replyTarget.id }));
+                    document.getElementById("article-comments")?.scrollIntoView({ behavior: "smooth" });
+                  }}
+                  onSubmit={(event) => void submitGuestbookMessage(event, activeArticle.id)}
+                />
+              }
             />
           )}
 
@@ -1027,6 +1087,7 @@ export function App() {
 
           {view === "guestbook" && (
             <Guestbook
+              mode="guestbook"
               authenticated={authenticated}
               captcha={guestbookCaptcha}
               cooldown={guestbookCooldown}
@@ -1075,6 +1136,7 @@ export function App() {
 }
 
 function Guestbook(props: {
+  mode: "guestbook" | "article";
   authenticated: boolean;
   captcha: GuestbookCaptcha | null;
   cooldown: number;
@@ -1094,6 +1156,7 @@ function Guestbook(props: {
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
 }) {
   const canSubmit = props.authenticated || props.cooldown === 0;
+  const articleMode = props.mode === "article";
 
   /** Updates one field in the controlled guestbook draft. */
   function setDraftField<Key extends keyof GuestbookInput>(key: Key, value: GuestbookInput[Key]) {
@@ -1101,8 +1164,8 @@ function Guestbook(props: {
   }
 
   return (
-    <div className="guestbook-page">
-      <section className="guestbook-compose" aria-label="留言输入">
+    <div className={articleMode ? "guestbook-page article-comments" : "guestbook-page"} id={articleMode ? "article-comments" : undefined}>
+      <section className="guestbook-compose" aria-label={articleMode ? "文章评论输入" : "留言输入"}>
         {props.replyTarget && (
           <div className="reply-context">
             <div className="reply-context-header">
@@ -1116,14 +1179,14 @@ function Guestbook(props: {
         )}
         <form className="guestbook-form" onSubmit={props.onSubmit}>
           <label className="guestbook-content-field">
-            留言
+            {articleMode ? "评论" : "留言"}
             <textarea
               required
               maxLength={500}
               rows={5}
               value={props.draft.content}
               onChange={(event) => setDraftField("content", event.target.value)}
-              placeholder="写下想说的话"
+              placeholder={articleMode ? "写下对这篇文章的想法" : "写下想说的话"}
             />
             <span className="field-hint">{props.draft.content.length}/500</span>
           </label>
@@ -1186,19 +1249,24 @@ function Guestbook(props: {
             <span>{props.authenticated ? "管理员发送不需要邮箱和验证码。" : props.cooldown > 0 ? `请 ${props.cooldown} 秒后再发送。` : "游客需要填写全部内容。"}</span>
             <button className="text-button primary" type="submit" disabled={props.submitting || !canSubmit}>
               {props.submitting && <ButtonSpinner />}
-              {props.submitting ? "发送中..." : props.replyTarget ? "发送回复" : "发送留言"}
+              {props.submitting ? "发送中..." : props.replyTarget ? "发送回复" : articleMode ? "发送评论" : "发送留言"}
             </button>
           </div>
         </form>
       </section>
 
-      <section className="guestbook-list" aria-label="留言列表">
+      <section className="guestbook-list" aria-label={articleMode ? "文章评论列表" : "留言列表"}>
         <div className="guestbook-list-heading">
-          <h1>留言列表</h1>
-          <span>{props.messages.length} 条主留言</span>
+          <h1>{articleMode ? "文章评论" : "留言列表"}</h1>
+          <span>{props.messages.length} 条{articleMode ? "评论" : "主留言"}</span>
         </div>
         {props.loading && <GuestbookListSkeleton />}
-        {!props.loading && props.messages.length === 0 && <EmptyState title="还没有留言" description="写下第一条留言吧。" />}
+        {!props.loading && props.messages.length === 0 && (
+          <EmptyState
+            title={articleMode ? "还没有评论" : "还没有留言"}
+            description={articleMode ? "来写下第一条评论吧。" : "写下第一条留言吧。"}
+          />
+        )}
         {!props.loading &&
           props.messages.map((message) => (
             <GuestbookMessageItem
@@ -1545,6 +1613,7 @@ function ArticleView(props: {
   onEdit: () => void;
   onDelete: () => void;
   onShare: () => void;
+  comments: React.ReactNode;
 }) {
   return (
     <article className="article-page">
@@ -1584,6 +1653,7 @@ function ArticleView(props: {
       <div className="markdown-body article-markdown">
         <MarkdownRenderer content={props.article.content} />
       </div>
+      {props.comments}
     </article>
   );
 }

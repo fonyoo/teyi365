@@ -41,6 +41,7 @@ describe("api helpers", () => {
     );
 
     expect(article.viewCount).toBe(7);
+    expect(article.id).toBe(1);
     expect(JSON.stringify(article)).not.toMatch(/ipAddress|userAgent|visitorHash/);
   });
 
@@ -127,18 +128,21 @@ describe("api helpers", () => {
       nickname: "访客",
       email: "guest@example.com",
       content: "你好",
-      parentId: null
+      parentId: null,
+      articleId: null
     });
     expect(() => validateMessageInput({ nickname: "很长很长很长很长很长很长", email: "guest@example.com", content: "你好", captchaToken: "t", captchaAnswer: "1" }, false)).toThrow();
     expect(() => validateMessageInput({ nickname: "访客", content: "你好", captchaToken: "t", captchaAnswer: "1" }, false)).toThrow();
   });
 
   it("lets administrators skip email and captcha while using the default nickname", () => {
-    expect(validateMessageInput({ nickname: "", email: "", content: "管理员回复" }, true)).toMatchObject({
+    expect(validateMessageInput({ nickname: "", email: "", content: "管理员回复", articleId: 12 }, true)).toMatchObject({
       nickname: "仰晨",
       email: "",
-      content: "管理员回复"
+      content: "管理员回复",
+      articleId: 12
     });
+    expect(() => validateMessageInput({ nickname: "", content: "评论", articleId: -1 }, true)).toThrow();
   });
 
   it("flattens replies to replies under the original parent", () => {

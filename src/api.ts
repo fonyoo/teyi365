@@ -139,8 +139,12 @@ export async function uploadImageFile(file: File, provider: ImageHostProvider) {
   return data;
 }
 
-export async function listMessages() {
-  return requestJson<{ messages: GuestbookMessage[] }>("/api/messages");
+export async function listMessages(articleId?: number | null, password = "") {
+  const params = new URLSearchParams();
+  if (articleId) params.set("articleId", String(articleId));
+  if (password) params.set("password", password);
+  const query = params.toString();
+  return requestJson<{ messages: GuestbookMessage[] }>(`/api/messages${query ? `?${query}` : ""}`);
 }
 
 export async function getMessageCaptcha() {

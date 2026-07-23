@@ -14,6 +14,7 @@ export interface Tag {
 }
 
 export interface ArticleSummary {
+  id: number;
   slug: string;
   title: string;
   excerpt: string;
@@ -86,6 +87,7 @@ export interface ArticleInput {
 
 export interface GuestbookMessage {
   id: number;
+  articleId?: number | null;
   parentId: number | null;
   nickname: string;
   email?: string;
@@ -101,6 +103,8 @@ export interface GuestbookInput {
   email: string;
   content: string;
   parentId?: number | null;
+  articleId?: number | null;
+  articlePassword?: string;
   captchaToken?: string;
   captchaAnswer?: string;
 }
