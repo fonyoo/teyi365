@@ -1,8 +1,8 @@
-name = "yc-blog"
+name = "teyi365"
 compatibility_date = "2026-05-19"
 pages_build_output_dir = "dist"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "cloudflare_blog"
-database_id = "6693e85b-b46f-48db-927c-46703d22d864"
+database_id = "052c6874-ff85-4e0b-9a28-63249dd7bdc7"
