@@ -232,7 +232,7 @@ describe("App statistics authorization", () => {
     render(<App />);
 
     await waitFor(() => expect(screen.getByTestId("statistics-page")).toBeTruthy());
-    expect(document.title).toBe("仰晨博客 - 访问统计");
+    expect(document.title).toBe("特医365 - 访问统计");
     expect(window.location.pathname).toBe("/statistics");
   });
 });
