@@ -141,7 +141,7 @@ describe("App article routing", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /测试文章/ }));
     await waitFor(() => expect(api.getArticle).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole("button", { name: /Yc556 Blog/ }));
+    fireEvent.click(screen.getByRole("button", { name: /特医 365/ }));
     fireEvent.click(screen.getByRole("button", { name: "留言板" }));
     await waitFor(() => expect(api.listMessages).toHaveBeenCalled());
     expect(screen.getByRole("button", { name: "打开中..." })).toHaveProperty("disabled", true);
@@ -168,7 +168,7 @@ describe("App article routing", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /测试文章/ }));
     await waitFor(() => expect(api.getArticle).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole("button", { name: /Yc556 Blog/ }));
+    fireEvent.click(screen.getByRole("button", { name: /特医 365/ }));
     fireEvent.click(screen.getByRole("button", { name: /测试文章/ }));
     await waitFor(() => expect(api.getArticle).toHaveBeenCalledTimes(2));
     expect(screen.getByRole("button", { name: "留言板" })).toHaveProperty("disabled", true);
