@@ -891,9 +891,9 @@ export function App() {
         <button className="brand-button" type="button" onClick={() => showList()}>
           <img className="brand-mark" src="/logo.svg" alt="Cloudflare Blog" />
           <span>
-            <strong>Yc556 Blog</strong>
+            <strong>特医 365</strong>
             <small>
-              仰晨个人博客
+              营养又健康，相伴每一天
               {authenticated && <span className="auth-pill brand-auth-pill">管理员视图</span>}
             </small>
           </span>
