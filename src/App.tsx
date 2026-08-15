@@ -746,7 +746,7 @@ export function App() {
         setGuestbookDraft((currentDraft) => ({ ...currentDraft, captchaToken: captchaResult.captcha.token, captchaAnswer: "" }));
       } else {
         setGuestbookCaptcha(null);
-        setGuestbookDraft((currentDraft) => ({ ...currentDraft, nickname: "仰晨", email: "", captchaToken: "", captchaAnswer: "" }));
+        setGuestbookDraft((currentDraft) => ({ ...currentDraft, nickname: "岳养", email: "", captchaToken: "", captchaAnswer: "" }));
       }
     } catch (caught) {
       if (requestId !== messageRequestIdRef.current) return;
@@ -796,7 +796,7 @@ export function App() {
     try {
       const input = {
         ...guestbookDraft,
-        nickname: authenticated ? "仰晨" : guestbookDraft.nickname,
+        nickname: authenticated ? "岳养" : guestbookDraft.nickname,
         parentId: guestbookReplyTarget?.id ?? null,
         articleId,
         articlePassword: articleId === null ? "" : currentArticlePassword(articleId),
@@ -809,7 +809,7 @@ export function App() {
       }
       setGuestbookDraft({
         ...defaultGuestbookDraft,
-        nickname: authenticated ? "仰晨" : guestbookDraft.nickname,
+        nickname: authenticated ? "岳养" : guestbookDraft.nickname,
         email: authenticated ? "" : guestbookDraft.email
       });
       setGuestbookReplyTarget(null);
@@ -1199,7 +1199,7 @@ function Guestbook(props: {
               <input
                 required
                 maxLength={10}
-                value={props.authenticated ? "仰晨" : props.draft.nickname}
+                value={props.authenticated ? "岳养" : props.draft.nickname}
                 onChange={(event) => setDraftField("nickname", event.target.value)}
                 disabled={props.authenticated}
                 placeholder="最多 10 个字"
