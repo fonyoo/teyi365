@@ -66,7 +66,7 @@ interface PasswordPromptState {
   error: string;
 }
 const firstArticlePage = 1; // Initial article list page.
-const siteTitle = "特医365"; // Browser title used outside article pages.
+const siteTitle = "特医365-营养又健康，相伴每一天"; // Browser title used outside article pages.
 const guestbookPath = "/guestbook"; // Shareable path for the guestbook page.
 const statisticsPath = "/statistics"; // Shareable path for administrator visit statistics.
 const searchDebounceMs = 650; // Delay before querying as the visitor types.
