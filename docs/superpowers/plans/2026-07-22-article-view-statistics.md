@@ -960,7 +960,7 @@ Modify `src/App.tsx` to:
 - Import `BarChart3`, `StatisticsPage`, and `ArticleViewCount`.
 - Extend `View` to include `"statistics"` and add `const statisticsPath = "/statistics"`.
 - Recognize `/statistics` during initial route parsing and `popstate` handling.
-- Update the document title to `仰晨博客 - 访问统计` for the statistics view.
+- Update the document title to `特医365 - 访问统计` for the statistics view.
 - Add `showStatistics(pushUrl = true)` that clears article-only state, sets the view, scrolls to top, and pushes `/statistics`.
 - When an administrator logs out while on the statistics view, return to the article list.
 - Render the statistics navigation button immediately before the guestbook button only when authenticated:
