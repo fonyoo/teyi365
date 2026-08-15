@@ -137,7 +137,7 @@ describe("api helpers", () => {
 
   it("lets administrators skip email and captcha while using the default nickname", () => {
     expect(validateMessageInput({ nickname: "", email: "", content: "管理员回复", articleId: 12 }, true)).toMatchObject({
-      nickname: "仰晨",
+      nickname: "岳养",
       email: "",
       content: "管理员回复",
       articleId: 12
