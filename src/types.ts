@@ -1,5 +1,5 @@
 export type Visibility = "public" | "private" | "password";
-export type ImageHostProvider = "imgbb" | "pixhost";
+export type ImageHostProvider = "r2"; // 修改为只支持 R2
 
 export interface ImageUploadResponse {
   url: string;
