@@ -123,20 +123,20 @@ export async function deleteArticle(slug: string) {
   });
 }
 
-/** Uploads one image to a specific provider through the authenticated API proxy. */
-export async function uploadImageFile(file: File, provider: ImageHostProvider) {
+/** Uploads one image to the R2 backend. */
+export async function uploadImageFile(file: File, _provider: ImageHostProvider) {
   const formData = new FormData();
   formData.set("file", file, file.name);
-  const response = await fetch(`/api/uploads?provider=${encodeURIComponent(provider)}`, {
+  const response = await fetch(`/api/upload`, {
     method: "POST",
     credentials: "include",
     body: formData
   });
-  const data = (await response.json().catch(() => ({}))) as ImageUploadResponse & ApiErrorPayload;
+  const data = (await response.json().catch(() => ({}))) as { url?: string } & ApiErrorPayload;
   if (!response.ok) {
     throw new ApiRequestError(data.error?.message ?? "图片上传失败", data.error?.code ?? "UNKNOWN");
   }
-  return data;
+  return { url: data.url ?? "", provider: "r2" } as ImageUploadResponse;
 }
 
 export async function listMessages(articleId?: number | null, password = "") {
