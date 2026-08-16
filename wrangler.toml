@@ -6,3 +6,7 @@ pages_build_output_dir = "dist"
 binding = "DB"
 database_name = "cloudflare_blog"
 database_id = "052c6874-ff85-4e0b-9a28-63249dd7bdc7"
+
+[[r2_buckets]]
+binding = "BLOG_IMAGES"
+bucket_name = "teyi365-blog-images"
