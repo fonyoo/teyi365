@@ -9,12 +9,12 @@ interface Env {
   DB: D1Database;
   ADMIN_USERNAME: string;
   ADMIN_PASSWORD: string;
-  IMGBB_API_KEY?: string;
+  BLOG_IMAGES: R2Bucket;
   SESSION_SECRET: string;
 }
 
 type Visibility = "public" | "private" | "password";
-type ImageHostProvider = "imgbb" | "pixhost";
+type ImageHostProvider = "r2";
 
 interface ArticleRow {
   id: number;
@@ -114,7 +114,6 @@ const passwordAttemptLimit = 5; // Failed article-password attempts allowed per 
 const passwordAttemptWindowMs = 60 * 60 * 1000; // Failed-attempt window length.
 const passwordBanMs = 60 * 60 * 1000; // IP ban length after too many failed attempts.
 const imageUploadMaxBytes = 10 * 1024 * 1024; // Maximum converted image size accepted by the upload proxy.
-const imageProviderTimeoutMs = 15 * 1000; // Maximum wait for a third-party image host.
 const imageExtensions: Record<string, string> = {
   "image/gif": "gif",
   "image/jpeg": "jpg",
@@ -139,8 +138,8 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       return await handleStatistics(context, segments.slice(1));
     }
 
-    if (segments[0] === "uploads") {
-      return await handleUploads(context, segments.slice(1));
+    if (segments[0] === "upload") {
+      return await handleUploads(context);
     }
 
     if (segments[0] === "article-search" && context.request.method === "GET") {
@@ -191,108 +190,41 @@ async function handleStatistics(context: EventContext<Env, string, unknown>, seg
   }
 }
 
-/** Routes authenticated image uploads to third-party hosts. */
-async function handleUploads(context: EventContext<Env, string, unknown>, segments: string[]) {
+/** Routes authenticated image uploads to R2. */
+async function handleUploads(context: EventContext<Env, string, unknown>) {
   const { request, env } = context;
 
-  if (segments.length === 0 && request.method === "POST") {
-    await requireAuth(request, env);
-    const provider = new URL(request.url).searchParams.get("provider") as ImageHostProvider | null;
-    if (!provider || !["imgbb", "pixhost"].includes(provider)) {
-      throw new ApiError("BAD_REQUEST", "不支持的图床", 400);
-    }
-
-    const formData = await request.formData();
-    const file = formData.get("file");
-    if (!(file instanceof File)) {
-      throw new ApiError("BAD_REQUEST", "请选择要上传的图片", 400);
-    }
-
-    const extension = imageExtensions[file.type];
-    if (!extension) {
-      throw new ApiError("BAD_REQUEST", "仅支持 JPEG、PNG、WebP 和 GIF 图片", 400);
-    }
-
-    if (file.size <= 0 || file.size > imageUploadMaxBytes) {
-      throw new ApiError("BAD_REQUEST", "图片大小需要在 10 MB 以内", 400);
-    }
-
-    const url = await uploadImageToProvider(provider, file, extension, env);
-    return json({ url, provider });
+  if (request.method !== "POST") {
+    return jsonError("METHOD_NOT_ALLOWED", "不支持的图片请求", 405);
   }
 
-  return jsonError("METHOD_NOT_ALLOWED", "不支持的图片请求", 405);
-}
+  await requireAuth(request, env);
 
-/** Uploads one image to the selected storage provider. */
-async function uploadImageToProvider(
-  provider: ImageHostProvider,
-  file: File,
-  extension: string,
-  env: Env
-) {
-  if (provider === "imgbb") {
-    const apiKey = String(env.IMGBB_API_KEY ?? "").trim();
-    if (!apiKey) {
-      throw new ApiError("UPLOAD_FAILED", "ImgBB API Key 尚未配置", 502);
-    }
-
-    const formData = new FormData();
-    formData.set("key", apiKey);
-    formData.set("image", file, `image.${extension}`);
-    const response = await fetchWithTimeout("https://api.imgbb.com/1/upload", { method: "POST", body: formData });
-    const result = (await response.json().catch(() => ({}))) as { success?: boolean; data?: { url?: string } };
-    const url = String(result.data?.url ?? "");
-    if (!response.ok || !result.success || !/^https:\/\/i\.ibb\.co\/[A-Za-z0-9/_-]+\.[A-Za-z0-9]+$/.test(url)) {
-      throw new ApiError("UPLOAD_FAILED", "ImgBB 上传失败，请检查 API Key", 502);
-    }
-    return url;
+  const formData = await request.formData();
+  const file = formData.get("file");
+  if (!(file instanceof File)) {
+    throw new ApiError("BAD_REQUEST", "请选择要上传的图片", 400);
   }
 
-  const formData = new FormData();
-  formData.set("img", file, `image.${extension}`);
-  formData.set("content_type", "0");
-  formData.set("max_th_size", "500");
-  const response = await fetchWithTimeout("https://api.pixhost.to/images", {
-    method: "POST",
-    headers: { Accept: "application/json" },
-    body: formData
+  const extension = imageExtensions[file.type];
+  if (!extension) {
+    throw new ApiError("BAD_REQUEST", "仅支持 JPEG、PNG、WebP 和 GIF 图片", 400);
+  }
+
+  if (file.size <= 0 || file.size > imageUploadMaxBytes) {
+    throw new ApiError("BAD_REQUEST", "图片大小需要在 10 MB 以内", 400);
+  }
+
+  const key = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`;
+  const arrayBuffer = await file.arrayBuffer();
+  await env.BLOG_IMAGES.put(key, arrayBuffer, {
+    httpMetadata: { contentType: file.type }
   });
-  const result = (await response.json().catch(() => ({}))) as { th_url?: string };
-  if (!response.ok || !result.th_url) {
-    throw new ApiError("UPLOAD_FAILED", "Pixhost 上传失败", 502);
-  }
-  return pixhostFullImageUrl(result.th_url);
-}
 
-/** Converts a Pixhost thumbnail URL into its corresponding full-resolution image URL. */
-export function pixhostFullImageUrl(thumbnailUrl: string) {
-  try {
-    const url = new URL(thumbnailUrl);
-    const hostMatch = url.hostname.match(/^t(\d+)\.pixhost\.to$/);
-    if (!hostMatch || !url.pathname.startsWith("/thumbs/")) {
-      throw new Error("Unexpected Pixhost URL");
-    }
-    url.protocol = "https:";
-    url.hostname = `img${hostMatch[1]}.pixhost.to`;
-    url.pathname = url.pathname.replace(/^\/thumbs\//, "/images/");
-    return url.toString();
-  } catch {
-    throw new ApiError("UPLOAD_FAILED", "Pixhost 返回了无法识别的图片地址", 502);
-  }
-}
+  const url = new URL(request.url);
+  const imageUrl = `${url.origin}/images/${key}`;
 
-/** Applies a bounded timeout to third-party image-host requests. */
-async function fetchWithTimeout(url: string, init: RequestInit) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), imageProviderTimeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } catch {
-    throw new ApiError("UPLOAD_FAILED", "图床连接失败，请尝试其他图床", 502);
-  } finally {
-    clearTimeout(timeout);
-  }
+  return json({ url: imageUrl, provider: "r2" });
 }
 
 async function handleAuth(context: EventContext<Env, string, unknown>, segments: string[]) {
