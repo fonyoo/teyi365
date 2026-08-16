@@ -6,10 +6,23 @@
   font-synthesis: none;
   line-height: 1.5;
   text-rendering: optimizeLegibility;
+  --primary: #2E7D32;        /* 主色：健康绿 */
+  --primary-hover: #1B5E20;  /* 主色悬停 */
+  --primary-light: #E8F5E9;  /* 主色浅底 */
+  --primary-border: #A5D6A7; /* 主色边框 */
 }
 
 * {
   box-sizing: border-box;
+}
+
+a {
+  color: var(--primary);
+  text-decoration: none;
+}
+
+a:hover {
+  color: var(--primary-hover);
 }
 
 body {
@@ -526,11 +539,11 @@ button {
 
 .search-snippet-label {
   flex: 0 0 auto;
-  border: 1px solid #e8dcc3;
+  border: 1px solid #c8e6c9;
   border-radius: 999px;
   padding: 1px 7px;
-  background: #fbf5e8;
-  color: #7a6040;
+  background: #f1f8f2;
+  color: #2e5d34;
   font-size: 12px;
   line-height: 1.45;
 }
@@ -543,8 +556,8 @@ button {
 .search-snippet mark {
   border-radius: 4px;
   padding: 0 2px;
-  background: #ffe69a;
-  color: #2f2410;
+  background: #d4edda;
+  color: #1e4d2b;
 }
 
 .article-date,
@@ -635,10 +648,10 @@ button {
   display: grid;
   gap: 10px;
   margin-bottom: 16px;
-  border: 1px solid #e8dcc3;
+  border: 1px solid #c8e6c9;
   border-radius: 8px;
   padding: 12px;
-  background: #fbf7ed;
+  background: #f1f8f2;
 }
 
 .reply-context-header,
@@ -796,11 +809,11 @@ button {
 .pending-pill {
   display: inline-flex;
   margin-left: 8px;
-  border: 1px solid #e8dcc3;
+  border: 1px solid #c8e6c9;
   border-radius: 999px;
   padding: 1px 7px;
-  background: #fbf5e8;
-  color: #7a6040;
+  background: #f1f8f2;
+  color: #2e5d34;
   font-size: 12px;
   font-weight: 800;
 }
@@ -868,9 +881,14 @@ button {
 }
 
 .text-button.primary {
-  border-color: #111827;
-  background: #111827;
+  border-color: var(--primary);
+  background: var(--primary);
   color: #fff;
+}
+
+.text-button.primary:hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
 }
 
 .text-button.ghost,
@@ -977,8 +995,8 @@ button {
 .markdown-body mark {
   border-radius: 3px;
   padding: 0.08em 0.22em;
-  background: #fff59d;
-  color: #24292f;
+  background: #d4edda;
+  color: #1e4d2b;
 }
 
 .markdown-body kbd {
