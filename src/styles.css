@@ -6,10 +6,10 @@
   font-synthesis: none;
   line-height: 1.5;
   text-rendering: optimizeLegibility;
-  --primary: #2E7D32;        /* 主色：健康绿 */
-  --primary-hover: #1B5E20;  /* 主色悬停 */
-  --primary-light: #E8F5E9;  /* 主色浅底 */
-  --primary-border: #A5D6A7; /* 主色边框 */
+  --primary: #2C7BE5;        /* 主色：医疗蓝 */
+  --primary-hover: #1A5BBF;  /* 主色悬停 */
+  --primary-light: #E8F1FF;  /* 主色浅底 */
+  --primary-border: #B3D4FF; /* 主色边框 */
 }
 
 * {
@@ -263,8 +263,8 @@ button {
 
 .tag-filter:hover,
 .tag-filter.active {
-  background: #e9eee5;
-  color: #1f3a2f;
+  background: var(--primary-light);
+  color: var(--primary-hover);
 }
 
 .tag-filter:disabled {
@@ -331,11 +331,11 @@ button {
 
 .auth-pill {
   flex: 0 0 auto;
-  border: 1px solid #cfd8c8;
+  border: 1px solid var(--primary-border);
   border-radius: 999px;
   padding: 6px 10px;
-  background: #eef5ea;
-  color: #31523d;
+  background: var(--primary-light);
+  color: var(--primary-hover);
   font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
@@ -477,7 +477,7 @@ button {
   border: 1px solid #d7d5cc;
   border-radius: 8px;
   background: rgb(255 255 255 / 88%);
-  color: #31523d;
+  color: var(--primary-hover);
   box-shadow: 0 8px 20px rgb(17 24 39 / 12%);
 }
 
@@ -539,11 +539,11 @@ button {
 
 .search-snippet-label {
   flex: 0 0 auto;
-  border: 1px solid #c8e6c9;
+  border: 1px solid var(--primary-border);
   border-radius: 999px;
   padding: 1px 7px;
-  background: #f1f8f2;
-  color: #2e5d34;
+  background: var(--primary-light);
+  color: var(--primary-hover);
   font-size: 12px;
   line-height: 1.45;
 }
@@ -556,8 +556,8 @@ button {
 .search-snippet mark {
   border-radius: 4px;
   padding: 0 2px;
-  background: #d4edda;
-  color: #1e4d2b;
+  background: #D6E9FF;
+  color: #1A3B6B;
 }
 
 .article-date,
@@ -648,10 +648,10 @@ button {
   display: grid;
   gap: 10px;
   margin-bottom: 16px;
-  border: 1px solid #c8e6c9;
+  border: 1px solid var(--primary-border);
   border-radius: 8px;
   padding: 12px;
-  background: #f1f8f2;
+  background: var(--primary-light);
 }
 
 .reply-context-header,
@@ -809,11 +809,11 @@ button {
 .pending-pill {
   display: inline-flex;
   margin-left: 8px;
-  border: 1px solid #c8e6c9;
+  border: 1px solid var(--primary-border);
   border-radius: 999px;
   padding: 1px 7px;
-  background: #f1f8f2;
-  color: #2e5d34;
+  background: var(--primary-light);
+  color: var(--primary-hover);
   font-size: 12px;
   font-weight: 800;
 }
@@ -825,7 +825,7 @@ button {
 }
 
 .approve-action {
-  color: #31523d;
+  color: var(--primary-hover);
 }
 
 .message-content {
@@ -995,8 +995,8 @@ button {
 .markdown-body mark {
   border-radius: 3px;
   padding: 0.08em 0.22em;
-  background: #d4edda;
-  color: #1e4d2b;
+  background: #D6E9FF;
+  color: #1A3B6B;
 }
 
 .markdown-body kbd {
@@ -1265,8 +1265,8 @@ textarea {
 
 input:focus,
 textarea:focus {
-  border-color: #5f7f68;
-  box-shadow: 0 0 0 3px rgb(95 127 104 / 14%);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgb(44 123 229 / 14%);
 }
 
 textarea {
@@ -1295,8 +1295,8 @@ textarea {
 }
 
 .tag-selector-input:focus-within {
-  border-color: #5f7f68;
-  box-shadow: 0 0 0 3px rgb(95 127 104 / 14%);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgb(44 123 229 / 14%);
 }
 
 .tag-selector-input input {
@@ -1364,11 +1364,11 @@ textarea {
 
 .tag-option:hover,
 .tag-option:focus-visible {
-  background: #eef3eb;
+  background: var(--primary-light);
 }
 
 .tag-option.create {
-  color: #31523d;
+  color: var(--primary-hover);
   font-weight: 800;
 }
 
@@ -1776,8 +1776,8 @@ textarea {
 
 .statistics-filter-form input:focus,
 .statistics-filter-form select:focus {
-  border-color: #5f7f68;
-  box-shadow: 0 0 0 3px rgb(95 127 104 / 14%);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgb(44 123 229 / 14%);
 }
 
 .statistics-filter-actions {
