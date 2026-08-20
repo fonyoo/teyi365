@@ -1981,3 +1981,22 @@ textarea {
     justify-content: center;
   }
 }
+/* 强制文章标题和元信息分行 */
+.article-header {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+}
+
+/* 强制标题变大 */
+.article-header h1 {
+  font-size: clamp(40px, 7vw, 76px) !important;
+}
+
+/* 确保元信息占满整行 */
+.article-meta {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  width: 100% !important;
+  margin-bottom: 20px !important;
+}
