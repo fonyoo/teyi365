@@ -962,7 +962,8 @@ button {
   align-items: center;
   gap: 9px;
   flex-wrap: wrap;
-  margin-bottom: 12px;
+  margin-bottom: 20px;   /* 增大与标题的间距 */
+  width: 100%;           /* 确保占满整行 */
 }
 
 .article-meta-title {
