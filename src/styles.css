@@ -949,6 +949,9 @@ button {
 }
 
 .article-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   margin-bottom: 28px;
 }
 
