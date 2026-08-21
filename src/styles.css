@@ -1992,11 +1992,11 @@ textarea {
 
 /* 真正的大标题：放大字号 */
 .article-meta-title {
-  font-size: clamp(40px, 7vw, 76px) !important;
+  font-size: clamp(40px, 7vw, 40px) !important;
   line-height: 1.15 !important;
   margin: 0 !important;
   color: #111827 !important;
-  font-weight: 800 !important;
+  font-weight: 500 !important;
 }
 
 /* 日期和浏览量所在容器：确保不和大标题挤在一行 */
