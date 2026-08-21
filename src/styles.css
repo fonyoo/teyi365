@@ -1981,3 +1981,30 @@ textarea {
     justify-content: center;
   }
 }
+/* ===== 文章详情页标题与元信息布局修复 ===== */
+
+/* 让文章头部内的标题和日期/浏览量垂直排列 */
+.article-head {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 真正的大标题：放大字号 */
+.article-meta-title {
+  font-size: clamp(40px, 7vw, 76px) !important;
+  line-height: 1.15 !important;
+  margin: 0 !important;
+  color: #111827 !important;
+  font-weight: 800 !important;
+}
+
+/* 日期和浏览量所在容器：确保不和大标题挤在一行 */
+.article-head .article-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  margin: 0 !important;
+  width: 100%;
+}
